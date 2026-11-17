@@ -12,8 +12,16 @@ jobs:
 
       - name: Unpack the project zip, if it was uploaded as a zip
         run: |
+          # When several zips are in the repo (e.g. "Shelf.zip" and "Shelf(1).zip"),
+          # unpack them oldest version first, so the newest version always wins.
           shopt -s nullglob
-          for z in *.zip; do unzip -o -q "$z"; done
+          for z in *.zip; do
+            v=$(unzip -p "$z" app/build.gradle 2>/dev/null | grep -o 'versionCode [0-9]*' | grep -o '[0-9]*' | head -n 1)
+            echo "${v:-0} $z"
+          done | sort -n | while read -r v z; do
+            echo "Unpacking $z (version $v)"
+            unzip -o -q "$z"
+          done
 
       - uses: actions/setup-java@v4
         with:
