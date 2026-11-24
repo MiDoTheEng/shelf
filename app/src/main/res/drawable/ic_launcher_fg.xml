@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- three books standing on a glowing shelf -->
+    <path android:fillColor="#5B4380" android:pathData="M34,36h10v34h-10z" />
+    <path android:fillColor="#2F6A86" android:pathData="M46,30h11v40h-11z" />
+    <path android:fillColor="#8A3B3B" android:pathData="M59,40h9v30h-9z" />
+    <path android:fillColor="#33FFFFFF" android:pathData="M36,36h1.5v34h-1.5z" />
+    <path android:fillColor="#33FFFFFF" android:pathData="M48,30h1.5v40h-1.5z" />
+    <path android:fillColor="#33FFFFFF" android:pathData="M61,40h1.5v30h-1.5z" />
+    <path android:fillColor="#D4AF6A" android:pathData="M36,42h6v1.5h-6z M48,37h7v1.5h-7z M60.5,46h6v1.5h-6z" />
+    <path android:fillColor="#D4AF6A" android:pathData="M28,70h52v2.5h-52z" />
+    <path android:fillColor="#40D4AF6A" android:pathData="M30,72.5h48v2.5h-48z" />
+    <path android:fillColor="#1AD4AF6A" android:pathData="M33,75h42v2.5h-42z" />
+</vector>

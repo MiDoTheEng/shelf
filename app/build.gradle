@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.shelf.reader'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.shelf.reader'
+        minSdk 26
+        targetSdk 34
+        versionCode 30
+        versionName '3.9'
+    }
+
+    // A fixed key kept in the project, so every new build installs over the previous
+    // one and the shelves are kept.
+    signingConfigs {
+        shelf {
+            storeFile file('shelf.keystore')
+            storePassword 'shelfapp'
+            keyAlias 'shelf'
+            keyPassword 'shelfapp'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.shelf
+        }
+        release {
+            signingConfig signingConfigs.shelf
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    // English-Arabic translation on the phone (the dictionary downloads once, then works offline).
+    implementation 'com.google.mlkit:translate:17.0.3'
+    // Reads the words on PDF pages on any Android version (tablets older than Android 15).
+    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+    // Talks to GitHub for syncing between devices.
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    // Keeps every Kotlin library at one version so they can't clash.
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+}
