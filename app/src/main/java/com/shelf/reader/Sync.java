@@ -286,6 +286,10 @@ final class Sync {
         for (Book b : out.added) lib.addOnline(b);
         if (out.booksChanged) lib.save();
         saveDeleted(c, "b", delB);
+        HashMap<String, Long> delH = loadDeleted(c, "h");
+        java.util.LinkedHashMap<String, History.Entry> hist = History.load(c);
+        if (SyncMerge.mergeHistory(hist, delH, remote.history, remote.deletedHistory)) History.save(c, hist);
+        saveDeleted(c, "h", delH);
         for (Quotes.BookQuotes s : out.setsChanged) Quotes.save(c, s);
         if (out.wordsChanged) Words.save(c, out.words);
         saveDeleted(c, "q", delQ);
@@ -343,6 +347,14 @@ final class Sync {
         HashMap<String, Long> map = loadDeleted(c, "b");
         map.put(b.key, System.currentTimeMillis());
         saveDeleted(c, "b", map);
+        request(c);
+    }
+
+    /** Remembers that a book was removed from the reading log, so other devices remove it too. */
+    static void historyDeleted(Context c, String key) {
+        HashMap<String, Long> map = loadDeleted(c, "h");
+        map.put(key, System.currentTimeMillis());
+        saveDeleted(c, "h", map);
         request(c);
     }
 
@@ -477,6 +489,16 @@ final class Sync {
                 readTimes(del.optJSONObject("quotes"), d.deletedQuotes);
                 readTimes(del.optJSONObject("words"), d.deletedWords);
                 readTimes(del.optJSONObject("books"), d.deletedBooks);
+                readTimes(del.optJSONObject("history"), d.deletedHistory);
+            }
+            JSONObject hist = o.optJSONObject("history");
+            if (hist != null) {
+                Iterator<String> it = hist.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    JSONObject j = hist.optJSONObject(k);
+                    if (j != null) d.history.put(k, History.fromJson(k, j));
+                }
             }
             JSONObject lib = o.optJSONObject("library");
             if (lib != null) {
@@ -580,6 +602,11 @@ final class Sync {
         JSONObject delB = new JSONObject();
         for (Map.Entry<String, Long> e : d.deletedBooks.entrySet()) delB.put(e.getKey(), (long) e.getValue());
         del.put("books", delB);
+        JSONObject delH = new JSONObject();
+        for (Map.Entry<String, Long> e : d.deletedHistory.entrySet()) delH.put(e.getKey(), (long) e.getValue());
+        del.put("history", delH);
+        JSONObject hist = new JSONObject();
+        for (Map.Entry<String, History.Entry> e : d.history.entrySet()) hist.put(e.getKey(), History.toJson(e.getValue()));
         JSONObject lib = new JSONObject();
         for (Map.Entry<String, SyncMerge.Entry> me : d.library.entrySet()) {
             SyncMerge.Entry e = me.getValue();
@@ -605,6 +632,7 @@ final class Sync {
         o.put("words", words);
         o.put("deleted", del);
         o.put("library", lib);
+        o.put("history", hist);
         return o.toString(1);
     }
 }

@@ -40,6 +40,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".ProgressActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".WordsActivity"
             android:exported="false" />
 

@@ -52,6 +52,9 @@ final class SyncMerge {
         final LinkedHashMap<String, Entry> library = new LinkedHashMap<>();
         /** Books deleted everywhere (fingerprint), with when. */
         final HashMap<String, Long> deletedBooks = new HashMap<>();
+        /** The reading log, and entries removed from it. */
+        final LinkedHashMap<String, History.Entry> history = new LinkedHashMap<>();
+        final HashMap<String, Long> deletedHistory = new HashMap<>();
         final LinkedHashMap<String, Pos> books = new LinkedHashMap<>();
         final LinkedHashMap<String, QSet> quotes = new LinkedHashMap<>();
         final ArrayList<Words.Entry> words = new ArrayList<>();
@@ -414,6 +417,59 @@ final class SyncMerge {
             out.added.add(b);
             out.booksChanged = true;
         }
+    }
+
+    /**
+     * The reading log: everything from both sides. The furthest progress and latest reading time
+     * win; whether a book is finished follows whichever device decided it last; name changes
+     * follow the latest change; entries removed on either side are removed everywhere.
+     */
+    static boolean mergeHistory(Map<String, History.Entry> local, Map<String, Long> deleted,
+                                Map<String, History.Entry> remote, Map<String, Long> remoteDeleted) {
+        for (Map.Entry<String, Long> e : remoteDeleted.entrySet()) later(deleted, e.getKey(), e.getValue());
+        boolean changed = false;
+        HashSet<String> keys = new HashSet<>(local.keySet());
+        keys.addAll(remote.keySet());
+        for (String k : keys) {
+            History.Entry l = local.get(k), r = remote.get(k), m;
+            if (l == null) {
+                m = r.copy();
+            } else if (r == null) {
+                m = l.copy();
+            } else {
+                m = (l.updated >= r.updated ? l : r).copy();
+                History.Entry further = r.progress > l.progress + 0.0005f ? r : l;
+                m.progress = further.progress;
+                m.where = further.where;
+                m.lastRead = Math.max(l.lastRead, r.lastRead);
+                m.started = l.started == 0 ? r.started : r.started == 0 ? l.started : Math.min(l.started, r.started);
+                History.Entry decided = r.finishedSet > l.finishedSet ? r : l;
+                m.finished = decided.finished;
+                m.finishedSet = decided.finishedSet;
+                if (m.thumb.isEmpty()) m.thumb = l.thumb.isEmpty() ? r.thumb : l.thumb;
+            }
+            Long gone = deleted.get(k);
+            if (gone != null && gone >= Math.max(m.lastRead, m.updated)) {
+                if (local.remove(k) != null) changed = true;
+                remote.remove(k);
+                continue;
+            }
+            if (l == null || !same(l, m)) {
+                local.put(k, m);
+                changed = true;
+            }
+            remote.put(k, m.copy());
+        }
+        remoteDeleted.clear();
+        remoteDeleted.putAll(deleted);
+        return changed;
+    }
+
+    private static boolean same(History.Entry a, History.Entry b) {
+        return a.progress == b.progress && a.lastRead == b.lastRead && a.started == b.started
+                && a.finished == b.finished && a.finishedSet == b.finishedSet && a.updated == b.updated
+                && a.title.equals(b.title) && a.author.equals(b.author) && a.where.equals(b.where)
+                && a.thumb.equals(b.thumb);
     }
 
     private static boolean inLibrary(Quotes.BookQuotes s, List<Book> library) {

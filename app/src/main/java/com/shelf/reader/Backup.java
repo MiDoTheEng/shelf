@@ -50,6 +50,11 @@ final class Backup {
         o.put("version", 1);
         o.put("quotes", books);
         o.put("words", words);
+        JSONObject hist = new JSONObject();
+        for (java.util.Map.Entry<String, History.Entry> e : History.load(c).entrySet()) {
+            hist.put(e.getKey(), History.toJson(e.getValue()));
+        }
+        o.put("history", hist);
         return o.toString();
     }
 
@@ -107,6 +112,22 @@ final class Backup {
                     }
                 });
                 Quotes.save(c, set);
+            }
+        }
+
+        // The reading log: added to, never replaced.
+        JSONObject hist = o.optJSONObject("history");
+        if (hist != null) {
+            java.util.LinkedHashMap<String, History.Entry> mine = History.load(c), theirs = new java.util.LinkedHashMap<>();
+            java.util.Iterator<String> it = hist.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                JSONObject j = hist.optJSONObject(k);
+                if (j != null) theirs.put(k, History.fromJson(k, j));
+            }
+            if (SyncMerge.mergeHistory(mine, new java.util.HashMap<String, Long>(), theirs,
+                    new java.util.HashMap<String, Long>())) {
+                History.save(c, mine);
             }
         }
 

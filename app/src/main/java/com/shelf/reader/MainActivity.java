@@ -62,10 +62,13 @@ public class MainActivity extends Activity {
         list.setCacheColorHint(0);
         list.setVerticalScrollBarEnabled(false);
 
+        // Title with the sync button, then a row of tabs: Quotes, Words, Progress.
         LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setOrientation(LinearLayout.VERTICAL);
         header.setPadding(Ui.dp(this, 22), Ui.dp(this, 30), Ui.dp(this, 18), Ui.dp(this, 6));
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout names = new LinearLayout(this);
         names.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
@@ -78,24 +81,7 @@ public class MainActivity extends Activity {
         subtitle.setTextSize(13);
         subtitle.setTextColor(0x99B8B2A6);
         names.addView(subtitle);
-        header.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView quotes = Ui.pill(this, "\u201C  Quotes", false);
-        quotes.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                startActivity(new Intent(MainActivity.this, QuotesActivity.class));
-            }
-        });
-        header.addView(quotes);
-        TextView words = Ui.pill(this, "\u0639  Words", false);
-        words.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                startActivity(new Intent(MainActivity.this, WordsActivity.class));
-            }
-        });
-        LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        wlp.leftMargin = Ui.dp(this, 8);
-        header.addView(words, wlp);
+        top.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView sync = Ui.pill(this, "\u21BB", false);
         sync.setContentDescription("Sync");
         sync.setOnClickListener(new View.OnClickListener() {
@@ -107,10 +93,28 @@ public class MainActivity extends Activity {
                 });
             }
         });
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        slp.leftMargin = Ui.dp(this, 8);
-        header.addView(sync, slp);
+        top.addView(sync);
+        header.addView(top);
+
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        String[] tabNames = {"\u201C  Quotes", "\u0639  Words", "\u25A4  Progress"};
+        final Class<?>[] screens = {QuotesActivity.class, WordsActivity.class, ProgressActivity.class};
+        for (int i = 0; i < tabNames.length; i++) {
+            final Class<?> screen = screens[i];
+            TextView tab = Ui.pill(this, tabNames[i], false);
+            tab.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    startActivity(new Intent(MainActivity.this, screen));
+                }
+            });
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            tlp.rightMargin = Ui.dp(this, 8);
+            tlp.topMargin = Ui.dp(this, 14);
+            tabs.addView(tab, tlp);
+        }
+        header.addView(tabs);
         list.addHeaderView(header, null, false);
 
         View space = new View(this);
@@ -172,6 +176,13 @@ public class MainActivity extends Activity {
     }
 
     private void handleIntent(Intent intent) {
+        String openId = intent == null ? null : intent.getStringExtra("open");
+        if (openId != null) {
+            intent.removeExtra("open");
+            Book b = lib.find(openId);
+            if (b != null) open(b);
+            return;
+        }
         if (intent != null && Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
             ArrayList<Uri> uris = new ArrayList<>();
             uris.add(intent.getData());

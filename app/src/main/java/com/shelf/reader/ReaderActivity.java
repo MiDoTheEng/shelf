@@ -850,6 +850,7 @@ public class ReaderActivity extends Activity {
                 startOffset = fraction;
             }
             lib.save();
+            History.record(this, book, "Section " + (chapter + 1) + " of " + content.chapterCount());
         }
         stopSyncWatch();
     }

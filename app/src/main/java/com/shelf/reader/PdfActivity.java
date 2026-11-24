@@ -1410,6 +1410,7 @@ public class PdfActivity extends Activity {
                 startPage = page;
             }
             lib.save();
+            History.record(this, book, "Page " + (page + 1) + " of " + pageCount);
         }
         stopSyncWatch();
     }
