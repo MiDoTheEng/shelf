@@ -350,6 +350,11 @@ final class Sync {
         request(c);
     }
 
+    /** Books removed from the reading log on any device, so nothing puts them back by itself. */
+    static java.util.Set<String> removedFromHistory(Context c) {
+        return loadDeleted(c, "h").keySet();
+    }
+
     /** Remembers that a book was removed from the reading log, so other devices remove it too. */
     static void historyDeleted(Context c, String key) {
         HashMap<String, Long> map = loadDeleted(c, "h");

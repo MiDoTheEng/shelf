@@ -169,12 +169,20 @@ final class History {
         Sync.request(c);
     }
 
-    /** Adds books already read before the log existed. */
+    /**
+     * Adds books read before the log existed. Done once per device only, and never for a book
+     * removed from the log or one not read on this device (its entry comes from the other device).
+     */
     static void backfill(Context c) {
+        android.content.SharedPreferences prefs = c.getSharedPreferences("shelf", Context.MODE_PRIVATE);
+        if (prefs.getBoolean("historyFilled", false)) return;
+        prefs.edit().putBoolean("historyFilled", true).apply();
         LinkedHashMap<String, Entry> map = load(c);
+        java.util.Set<String> removed = Sync.removedFromHistory(c);
         boolean changed = false;
         for (Book b : Library.get(c).all()) {
-            if (b.progress <= 0.0005f || map.containsKey(keyOf(b))) continue;
+            String key = keyOf(b);
+            if (b.progress <= 0.0005f || b.onlineOnly() || map.containsKey(key) || removed.contains(key)) continue;
             Entry e = new Entry();
             e.key = keyOf(b);
             e.title = b.title;
