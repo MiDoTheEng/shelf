@@ -54,7 +54,9 @@ final class PdfPageView extends View {
     private float downX, downY;
     private boolean multi, zoomChanged;
 
-    // Drawing. A stylus always draws; a finger draws only while the drawing tools are open.
+    // Drawing. A stylus always draws. A finger draws only while the drawing tools are open,
+    // and only on a device that has never used a stylus: once a stylus has been seen, fingers
+    // are for turning pages, zooming and selecting, and the stylus is for drawing.
     int tool = PEN;
     int penColor = 0xFFE53935, markerColor = 0xFFFFD54A;
     boolean fingerDraws;
@@ -85,6 +87,7 @@ final class PdfPageView extends View {
     PdfPageView(Context c) {
         super(c);
         d = c.getResources().getDisplayMetrics().density;
+        stylusSeen = c.getSharedPreferences("pen", 0).getBoolean("stylusSeen", false);
         selPaint.setColor(0x66D4AF6A);
         inkPaint.setStyle(Paint.Style.STROKE);
         inkPaint.setStrokeCap(Paint.Cap.ROUND);
@@ -245,6 +248,15 @@ final class PdfPageView extends View {
     }
 
     private boolean stylusSeen;
+    private float inkDownX, inkDownY;
+    private long inkDownTime;
+
+    /** Remembers for good that this device has a stylus. */
+    private void markStylus() {
+        if (stylusSeen) return;
+        stylusSeen = true;
+        getContext().getSharedPreferences("pen", 0).edit().putBoolean("stylusSeen", true).apply();
+    }
     private float lastInkY = -1f;
 
     /**
@@ -427,7 +439,7 @@ final class PdfPageView extends View {
         int type = e.getToolType(0);
         if ((type == MotionEvent.TOOL_TYPE_STYLUS || type == MotionEvent.TOOL_TYPE_ERASER)
                 && Math.abs(e.getY() - lastInkY) > 40 * d) {
-            stylusSeen = true;
+            markStylus();
             lastInkY = e.getY();
             updateExclusion();
         }
@@ -441,11 +453,14 @@ final class PdfPageView extends View {
             stylusGesture = type == MotionEvent.TOOL_TYPE_STYLUS || type == MotionEvent.TOOL_TYPE_ERASER;
             scaleOnly = false;
             if (stylusGesture && !stylusSeen) {
-                stylusSeen = true;
+                markStylus();
                 updateExclusion();
             }
-            inkGesture = ink != null && (stylusGesture || fingerDraws) && place();
+            inkGesture = ink != null && (stylusGesture || (fingerDraws && !stylusSeen)) && place();
             if (inkGesture) {
+                inkDownX = e.getX();
+                inkDownY = e.getY();
+                inkDownTime = e.getEventTime();
                 activeTool = type == MotionEvent.TOOL_TYPE_ERASER ? ERASER : tool;
                 if (listener != null) listener.onInkStart();
                 inkChanged = false;
@@ -476,11 +491,23 @@ final class PdfPageView extends View {
                     for (int i = 0; i < e.getHistorySize(); i++) inkTo(e.getHistoricalX(i), e.getHistoricalY(i));
                     inkTo(e.getX(), e.getY());
                 } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    // Drawing with a finger, a quick straight swipe across the page still turns it.
+                    int turn = 0;
+                    if (action == MotionEvent.ACTION_UP && !stylusGesture && live != null
+                            && e.getEventTime() - inkDownTime < 350) {
+                        turn = swipe(e.getX() - inkDownX, e.getY() - inkDownY, getWidth() * 0.22f);
+                    }
+                    if (turn != 0) {
+                        ink.strokes.remove(live);
+                        inkChanged = false;
+                        invalidate();
+                    }
                     live = null;
                     inkGesture = false;
                     lastInkY = e.getY();
                     updateExclusion();
                     if (inkChanged && listener != null) listener.onInkChanged();
+                    if (turn != 0 && listener != null && zoom <= 1.02f) listener.onTurn(turn);
                 }
                 return true;
             }
