@@ -85,6 +85,14 @@ public class MainActivity extends Activity {
         title.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
         title.setTextColor(0xFFF2ECDD);
         names.addView(title);
+        TextView motto = new TextView(this);
+        motto.setText("Reading Saved Me");
+        motto.setTextSize(15);
+        motto.setTypeface(Typeface.create(Typeface.SERIF, Typeface.ITALIC));
+        motto.setTextColor(0xFFD4AF6A);
+        motto.setLetterSpacing(0.04f);
+        motto.setPadding(0, 0, 0, Ui.dp(this, 4));
+        names.addView(motto);
         subtitle = new TextView(this);
         subtitle.setTextSize(13);
         subtitle.setTextColor(0x99B8B2A6);
