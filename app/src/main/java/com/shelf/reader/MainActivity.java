@@ -43,6 +43,8 @@ public class MainActivity extends Activity {
     private final ArrayList<Row> rows = new ArrayList<>();
     private RowAdapter adapter;
     private TextView subtitle;
+    /** What the search box holds, in lower case; empty shows the whole Library. */
+    private String query = "";
     private FrameLayout shelvesRoot;
     private ListView shelves;
     /** The book flying between shelves: its place stays empty until it lands. */
@@ -121,7 +123,46 @@ public class MainActivity extends Activity {
             tabs.addView(tab, tlp);
         }
         header.addView(tabs);
+
+        // Search the Library by book name or author as you type.
+        final EditText search = new EditText(this);
+        search.setHint("\u2315  Search your library");
+        search.setSingleLine(true);
+        search.setTextSize(15);
+        search.setTextColor(0xFFF2ECDD);
+        search.setHintTextColor(0x77B8B2A6);
+        search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        GradientDrawable box = new GradientDrawable();
+        box.setColor(0x14FFFFFF);
+        box.setStroke(Math.max(1, Ui.dp(this, 1)), 0x40D4AF6A);
+        box.setCornerRadius(Ui.dp(this, 22));
+        search.setBackground(box);
+        search.setPadding(Ui.dp(this, 16), Ui.dp(this, 10), Ui.dp(this, 16), Ui.dp(this, 10));
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence q, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence q, int a, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable q) {
+                query = q.toString().trim().toLowerCase(java.util.Locale.ROOT);
+                rebuild();
+            }
+        });
+        search.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override public boolean onEditorAction(TextView v, int action, android.view.KeyEvent e) {
+                android.view.inputmethod.InputMethodManager im = (android.view.inputmethod.InputMethodManager)
+                        getSystemService(INPUT_METHOD_SERVICE);
+                if (im != null) im.hideSoftInputFromWindow(v.getWindowToken(), 0);
+                return true;
+            }
+        });
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        slp.topMargin = Ui.dp(this, 14);
+        slp.rightMargin = Ui.dp(this, 4);
+        header.addView(search, slp);
         list.addHeaderView(header, null, false);
+        // Lets the search box keep the keyboard while the shelves below change.
+        list.setItemsCanFocus(true);
+        list.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
 
         View space = new View(this);
         space.setLayoutParams(new AbsListView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 100)));
@@ -241,12 +282,28 @@ public class MainActivity extends Activity {
 
         rows.clear();
         addShelf("Currently reading", reading, "Books you open will wait for you here");
-        addShelf("Library", library, reading.isEmpty()
-                ? "Tap + to add PDF, EPUB or Kindle books"
-                : "Every book is on your reading shelf");
         int total = reading.size() + library.size();
+        String libraryHint = reading.isEmpty()
+                ? "Tap + to add PDF, EPUB or Kindle books"
+                : "Every book is on your reading shelf";
+        if (!query.isEmpty()) {
+            List<Book> found = new ArrayList<>();
+            for (Book b : library) if (matches(b, query)) found.add(b);
+            library = found;
+            libraryHint = "No books in your library match \u201C" + query + "\u201D";
+        }
+        addShelf("Library", library, libraryHint);
         subtitle.setText(total == 0 ? "Your shelves are empty" : total == 1 ? "1 book" : total + " books");
         adapter.notifyDataSetChanged();
+    }
+
+    private static boolean matches(Book b, String q) {
+        String title = b.title == null ? "" : b.title.toLowerCase(java.util.Locale.ROOT);
+        String author = b.author == null ? "" : b.author.toLowerCase(java.util.Locale.ROOT);
+        for (String word : q.split("\\s+")) {
+            if (!title.contains(word) && !author.contains(word)) return false;
+        }
+        return true;
     }
 
     /**
