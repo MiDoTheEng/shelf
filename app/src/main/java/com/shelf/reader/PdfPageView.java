@@ -150,14 +150,14 @@ final class PdfPageView extends View {
     private float lastAspect = 1.414f;
     private int paper = 0xFFFFFFFF;
     private static final long FADE_MS = 150;
-    private static final long TURN_MS = 340;
+    private static final long TURN_MS = 480;
 
     // Turning like paper: the leaving page swings around the book's spine.
     private Ink.Page previousInk;
     private int turnDir, waitingDir;
-    private final android.graphics.Camera camera = new android.graphics.Camera();
-    private final android.graphics.Matrix turnMatrix = new android.graphics.Matrix();
-    private final Paint shadePaint = new Paint();
+    private final PageCurl curl = new PageCurl();
+    /** The page that curls over, with its ink drawn in. */
+    private Bitmap curling;
 
     /** Shows another page. If it isn't drawn yet, the current page stays up until {@link #arrived}. */
     void turnTo(Bitmap b, Ink.Page page) {
@@ -180,6 +180,8 @@ final class PdfPageView extends View {
             previousInk = ink;
             turnDir = dir;
             fadeStart = android.os.SystemClock.uptimeMillis();
+            // Forward, the page you leave curls away; back, the earlier page curls in over it.
+            curling = dir > 0 ? withInk(bitmap, ink) : dir < 0 ? withInk(b, page) : null;
         }
         ink = page;
         live = null;
@@ -534,39 +536,16 @@ final class PdfPageView extends View {
         drawInk(canvas, page, where);
     }
 
-    /** A page turned {@code amount} of the way over (0 flat, 1 edge-on), with its ink. */
-    private void drawTurning(Canvas canvas, Bitmap b, RectF where, Ink.Page page, float amount) {
-        float angle = 90f * amount;
-        float px, py;
-        camera.save();
-        camera.setLocation(0, 0, -Math.max(getWidth(), getHeight()) * 2.5f / 72f);
-        if ("up".equals(mode)) {
-            px = where.centerX();
-            py = Math.max(0, where.top);
-            camera.rotateX(-angle);
-        } else if ("right".equals(mode)) {
-            px = Math.min(getWidth(), where.right);
-            py = where.centerY();
-            camera.rotateY(-angle);
-        } else {
-            px = Math.max(0, where.left);
-            py = where.centerY();
-            camera.rotateY(angle);
+    /** A copy of the page with its ink drawn on, so the ink bends with the paper. */
+    private Bitmap withInk(Bitmap b, Ink.Page page) {
+        if (page == null || page.isEmpty()) return b;
+        try {
+            Bitmap copy = b.copy(Bitmap.Config.ARGB_8888, true);
+            drawInk(new Canvas(copy), page, new RectF(0, 0, copy.getWidth(), copy.getHeight()));
+            return copy;
+        } catch (Throwable t) {
+            return b;
         }
-        camera.getMatrix(turnMatrix);
-        camera.restore();
-        turnMatrix.preTranslate(-px, -py);
-        turnMatrix.postTranslate(px, py);
-        canvas.save();
-        canvas.concat(turnMatrix);
-        Paint p = turnDir > 0 ? fadePaint : paint;
-        p.setAlpha(255);
-        canvas.drawBitmap(b, null, where, p);
-        drawInk(canvas, page, where);
-        // It darkens as it turns away from the light.
-        shadePaint.setColor(Math.round(110 * amount) << 24);
-        canvas.drawRect(where, shadePaint);
-        canvas.restore();
     }
 
     private void drawInk(Canvas canvas, Ink.Page page, RectF where) {
@@ -605,6 +584,7 @@ final class PdfPageView extends View {
         if (t >= 1f) {
             previous = null;
             previousInk = null;
+            curling = null;
             drawPage(canvas, bitmap, dst, ink, paint);
         } else if (turnDir == 0) {
             drawPage(canvas, bitmap, dst, ink, paint);
@@ -613,14 +593,17 @@ final class PdfPageView extends View {
             postInvalidateOnAnimation();
         } else {
             float e = t * t * (3f - 2f * t);
+            boolean day = paint.getColorFilter() == null;
+            paint.setAlpha(255);
+            fadePaint.setAlpha(255);
             if (turnDir > 0) {
-                // The page you leave lifts away around the spine; the next one is underneath.
+                // The page you leave curls away; the next one is underneath.
                 drawPage(canvas, bitmap, dst, ink, paint);
-                drawTurning(canvas, previous, previousDst, previousInk, e);
+                curl.draw(canvas, curling, previousDst, fadePaint, e, mode, paper, day);
             } else {
-                // Going back, the earlier page swings back in over the one you were on.
+                // Going back, the earlier page uncurls over the one you were on.
                 drawPage(canvas, previous, previousDst, previousInk, fadePaint);
-                drawTurning(canvas, bitmap, dst, ink, 1f - e);
+                curl.draw(canvas, curling, dst, paint, 1f - e, mode, paper, day);
             }
             postInvalidateOnAnimation();
         }

@@ -382,8 +382,8 @@ public class ReaderActivity extends Activity {
 
     /**
      * Turns like paper: a picture of the page is laid over the book, the book jumps to the
-     * next page underneath, and the picture swings away around the spine. Going back, the
-     * earlier page swings in over the one you were on.
+     * next page underneath, and the picture curls away. Going back, the earlier page curls
+     * in over the one you were on.
      */
     private void turnPage(final int delta, final String mode) {
         final String go = "window.__shelf?window.__shelf.go(" + delta + ",true):false";
@@ -393,16 +393,19 @@ public class ReaderActivity extends Activity {
             return;
         }
         turning = true;
-        final android.widget.ImageView under = sheet(old);
+        final CurlView sheet = new CurlView(old, mode);
+        root.addView(sheet, root.indexOfChild(web) + 1, new FrameLayout.LayoutParams(web.getWidth(), web.getHeight()));
+        sheet.setX(web.getX());
+        sheet.setY(web.getY());
         web.evaluateJavascript(go, new android.webkit.ValueCallback<String>() {
             @Override public void onReceiveValue(String turned) {
                 if (!"true".equals(turned)) {
                     // End of the chapter: the next one loads on its own.
-                    finishTurn(under, null);
+                    finishTurn(sheet);
                     return;
                 }
                 if (delta > 0) {
-                    swing(under, mode, 0f, 1f, under, null);
+                    sheet.run(0f, 1f);
                     return;
                 }
                 // Let the earlier page draw, then bring it in over the current one.
@@ -410,11 +413,12 @@ public class ReaderActivity extends Activity {
                     @Override public void run() {
                         android.graphics.Bitmap now = snapshot();
                         if (now == null) {
-                            finishTurn(under, null);
+                            finishTurn(sheet);
                             return;
                         }
-                        android.widget.ImageView over = sheet(now);
-                        swing(over, mode, 1f, 0f, under, over);
+                        sheet.under = old;
+                        sheet.page = now;
+                        sheet.run(1f, 0f);
                     }
                 }, 90);
             }
@@ -433,54 +437,53 @@ public class ReaderActivity extends Activity {
         }
     }
 
-    /** A picture of the page, placed right above the book and below the bars. */
-    private android.widget.ImageView sheet(android.graphics.Bitmap b) {
-        android.widget.ImageView v = new android.widget.ImageView(this);
-        v.setImageBitmap(b);
-        v.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
-        root.addView(v, root.indexOfChild(web) + 1, new FrameLayout.LayoutParams(web.getWidth(), web.getHeight()));
-        v.setX(web.getX());
-        v.setY(web.getY());
-        return v;
-    }
-
-    private void swing(final android.widget.ImageView v, final String mode, final float from, final float to,
-                       final View a, final View b) {
-        v.setCameraDistance(Math.max(web.getWidth(), web.getHeight()) * 2.5f);
-        final boolean up = mode.equals("up");
-        if (up) {
-            v.setPivotX(web.getWidth() / 2f);
-            v.setPivotY(0);
-        } else {
-            v.setPivotX(mode.equals("right") ? web.getWidth() : 0);
-            v.setPivotY(web.getHeight() / 2f);
-        }
-        final float sign = mode.equals("right") ? 1f : -1f;
-        android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(from, to);
-        anim.setDuration(340);
-        anim.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
-        anim.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
-            @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
-                float t = (Float) va.getAnimatedValue();
-                if (up) v.setRotationX(90f * t);
-                else v.setRotationY(sign * 90f * t);
-                // It darkens as it turns away from the light.
-                int shade = Math.round(255 * (1f - 0.45f * t));
-                v.setColorFilter(Color.rgb(shade, shade, shade), android.graphics.PorterDuff.Mode.MULTIPLY);
-            }
-        });
-        anim.addListener(new android.animation.AnimatorListenerAdapter() {
-            @Override public void onAnimationEnd(android.animation.Animator animation) {
-                finishTurn(a, b);
-            }
-        });
-        anim.start();
-    }
-
-    private void finishTurn(View a, View b) {
-        if (a != null) root.removeView(a);
-        if (b != null) root.removeView(b);
+    private void finishTurn(View sheet) {
+        root.removeView(sheet);
         turning = false;
+    }
+
+    /** A picture of the page that curls over the book. */
+    private final class CurlView extends View {
+        android.graphics.Bitmap page, under;
+        private final String mode;
+        private final int paper;
+        private float t;
+        private final PageCurl curl = new PageCurl();
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+        private final android.graphics.RectF rect = new android.graphics.RectF();
+
+        CurlView(android.graphics.Bitmap page, String mode) {
+            super(ReaderActivity.this);
+            this.page = page;
+            this.mode = mode;
+            // The back of the page takes the colour of the page's own background.
+            paper = page.getPixel(Math.min(3, page.getWidth() - 1), Math.min(3, page.getHeight() - 1)) | 0xFF000000;
+        }
+
+        void run(float from, float to) {
+            android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(from, to);
+            anim.setDuration(480);
+            anim.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+            anim.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+                @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
+                    t = (Float) va.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            anim.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator animation) {
+                    finishTurn(CurlView.this);
+                }
+            });
+            anim.start();
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas canvas) {
+            rect.set(0, 0, getWidth(), getHeight());
+            if (under != null) canvas.drawBitmap(under, null, rect, paint);
+            curl.draw(canvas, page, rect, paint, t, mode, paper, true);
+        }
     }
 
     private void loadChapter() {
