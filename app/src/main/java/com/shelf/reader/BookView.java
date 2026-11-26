@@ -14,7 +14,9 @@ import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.animation.OvershootInterpolator;
 
 /** A single book cover standing on a shelf. */
 final class BookView extends View {
@@ -51,7 +53,61 @@ final class BookView extends View {
         return book;
     }
 
+    // ------------------------------------------------------------ animation
+
+    private boolean lifted;
+
+    /** Back to standing straight on the shelf, at once (used when a shelf row is reused). */
+    void stand() {
+        animate().cancel();
+        lifted = false;
+        setTranslationY(0);
+        setRotation(0);
+        setScaleX(1f);
+        setScaleY(1f);
+    }
+
+    boolean lifted() {
+        return lifted;
+    }
+
+    /** Touching a book lifts it out of the row with a slight tilt, like taking it off the shelf. */
+    @Override public boolean onTouchEvent(MotionEvent e) {
+        if (book != null) {
+            int action = e.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                lifted = true;
+                setPivotX(getWidth() / 2f);
+                setPivotY(getHeight());
+                animate().translationY(-10 * d).rotation(-3f).scaleX(1.05f).scaleY(1.05f)
+                        .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                        .setDuration(140).start();
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (lifted) settle();
+            }
+        }
+        return super.onTouchEvent(e);
+    }
+
+    /** Back onto the shelf with a small bounce. */
+    void settle() {
+        lifted = false;
+        animate().translationY(0).rotation(0).scaleX(1f).scaleY(1f)
+                .setInterpolator(new OvershootInterpolator(2.5f)).setDuration(380).start();
+    }
+
+    /** Opening: the book slides up and out of the shelf, then {@code then} runs. */
+    void pullOut(Runnable then) {
+        lifted = true;
+        setPivotX(getWidth() / 2f);
+        setPivotY(getHeight());
+        animate().translationY(-34 * d).rotation(0).scaleX(1.1f).scaleY(1.1f)
+                .setInterpolator(new android.view.animation.AccelerateInterpolator())
+                .setDuration(170).withEndAction(then).start();
+    }
+
     void setBook(Book b) {
+        stand();
         book = b;
         bitmap = null;
         titleLayout = null;

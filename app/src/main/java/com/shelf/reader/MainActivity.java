@@ -123,6 +123,32 @@ public class MainActivity extends Activity {
 
         adapter = new RowAdapter();
         list.setAdapter(adapter);
+        list.setOnScrollListener(new AbsListView.OnScrollListener() {
+            private int lastFirst = -1, lastTop;
+            private long lastTime;
+            private float speed;
+
+            @Override public void onScrollStateChanged(AbsListView view, int state) {
+                if (state == SCROLL_STATE_IDLE) {
+                    speed = 0;
+                    swayBooks(view, 0, true);
+                }
+            }
+
+            @Override public void onScroll(AbsListView view, int first, int visible, int total) {
+                View top = view.getChildAt(0);
+                long now = android.os.SystemClock.uptimeMillis();
+                if (top == null) return;
+                if (first == lastFirst && now > lastTime) {
+                    float v = (top.getTop() - lastTop) / (float) (now - lastTime);
+                    speed = speed * 0.6f + v * 0.4f;
+                    swayBooks(view, speed, false);
+                }
+                lastFirst = first;
+                lastTop = top.getTop();
+                lastTime = now;
+            }
+        });
         root.addView(list, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -217,6 +243,34 @@ public class MainActivity extends Activity {
         adapter.notifyDataSetChanged();
     }
 
+    /**
+     * While the shelves scroll the books sway with the movement: they lag behind a little and
+     * tip, alternating left and right; when scrolling stops they settle back with a bounce.
+     */
+    private void swayBooks(AbsListView list, float speed, boolean settle) {
+        float d = getResources().getDisplayMetrics().density;
+        float lag = Math.max(-10 * d, Math.min(10 * d, speed * 6 * d));
+        float tilt = Math.min(4f, Math.abs(speed) * 1.6f);
+        for (int i = 0; i < list.getChildCount(); i++) {
+            View child = list.getChildAt(i);
+            if (!(child instanceof ShelfRow)) continue;
+            BookView[] slots = ((ShelfRow) child).slots;
+            for (int k = 0; k < slots.length; k++) {
+                BookView b = slots[k];
+                if (b.book() == null || b.lifted()) continue;
+                if (settle) {
+                    b.settle();
+                } else {
+                    b.animate().cancel();
+                    b.setPivotX(b.getWidth() / 2f);
+                    b.setPivotY(b.getHeight());
+                    b.setTranslationY(lag);
+                    b.setRotation((k % 2 == 0 ? 1 : -1) * tilt * Math.signum(speed));
+                }
+            }
+        }
+    }
+
     private void addShelf(String name, List<Book> books, String emptyHint) {
         Row head = new Row();
         head.header = name.toUpperCase() + (books.isEmpty() ? "" : "   ·   " + books.size());
@@ -272,9 +326,15 @@ public class MainActivity extends Activity {
                     v.setLongClickable(false);
                 } else {
                     v.setContentDescription(b.title);
+                    final BookView bv = v;
                     v.setOnClickListener(new View.OnClickListener() {
                         @Override public void onClick(View view) {
-                            open(b);
+                            // The book slides out of the shelf, then opens.
+                            bv.pullOut(new Runnable() {
+                                @Override public void run() {
+                                    open(b);
+                                }
+                            });
                         }
                     });
                     v.setOnLongClickListener(new View.OnLongClickListener() {
