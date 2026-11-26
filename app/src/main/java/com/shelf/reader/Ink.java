@@ -78,6 +78,10 @@ final class Ink {
     /** Section number -> highlighted {start, end} character ranges. */
     private final HashMap<Integer, ArrayList<int[]>> texts = new HashMap<>();
     boolean dirty;
+    /** The change time of the drawings this copy holds: newer ones from another device replace it. */
+    long time;
+    /** The drawings of the book open on screen, so a sync never swaps them out mid-stroke. */
+    static volatile Ink open;
 
     private Context context;
     private String bookId = "";
@@ -114,10 +118,23 @@ final class Ink {
         return list;
     }
 
+    boolean isFor(String id) {
+        return bookId.equals(id);
+    }
+
+    /** True when the drawings saved for this book are newer than the ones in this copy. */
+    boolean stale() {
+        if (context == null || dirty) return false;
+        Book b = Library.get(context).find(bookId);
+        return b != null && !b.inkPending && b.inkTime > time;
+    }
+
     static Ink load(Context c, String bookId) {
         Ink ink = new Ink(fileFor(c, bookId));
         ink.context = c.getApplicationContext();
         ink.bookId = bookId;
+        Book owner = Library.get(c).find(bookId);
+        if (owner != null) ink.time = owner.inkTime;
         if (!ink.file.exists()) return ink;
         try {
             JSONObject o = new JSONObject(new String(Util.readAll(new FileInputStream(ink.file)), StandardCharsets.UTF_8));
@@ -183,6 +200,7 @@ final class Ink {
             b.inkTime = System.currentTimeMillis();
             b.inkAsset = "";
             b.inkPending = false;
+            time = b.inkTime;
         }
         lib.save();
         Sync.request(context);

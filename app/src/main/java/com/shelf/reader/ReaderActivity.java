@@ -1127,6 +1127,11 @@ public class ReaderActivity extends Activity {
     private final Runnable synced = new Runnable() {
         @Override public void run() {
             checkPending();
+            // Highlights made on another device: they show from the next chapter opened.
+            if (ink != null && ink.stale()) {
+                ink = Ink.load(ReaderActivity.this, book.id);
+                Ink.open = ink;
+            }
         }
     };
 
@@ -1134,14 +1139,16 @@ public class ReaderActivity extends Activity {
         super.onResume();
         if (book == null) return;
         Sync.openBookId = book.id;
+        Ink.open = ink;
         Sync.listen(synced);
+        synced.run();
         Sync.request(this);
-        checkPending();
     }
 
     private void stopSyncWatch() {
         if (book == null) return;
         if (book.id.equals(Sync.openBookId)) Sync.openBookId = null;
+        if (Ink.open == ink) Ink.open = null;
         Sync.unlisten(synced);
         Sync.request(this);
     }

@@ -304,6 +304,9 @@ public class PdfActivity extends Activity {
                 if (startOfChange != null) remember(startOfChange);
                 startOfChange = null;
                 refreshUndo();
+                // Saved (and sent to the other devices) once the pen rests for a moment.
+                pageView.removeCallbacks(saveInk);
+                pageView.postDelayed(saveInk, 15000);
             }
         };
         root.addView(pageView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1430,14 +1433,35 @@ public class PdfActivity extends Activity {
     private final Runnable synced = new Runnable() {
         @Override public void run() {
             checkPending();
+            freshInk();
         }
     };
+
+    private final Runnable saveInk = new Runnable() {
+        @Override public void run() {
+            if (ink != null && ink.dirty && !closed) ink.save();
+        }
+    };
+
+    /** Shows drawings that arrived from another device, if nothing is being drawn here. */
+    private void freshInk() {
+        if (ink == null || closed || !ink.stale()) return;
+        ink = Ink.load(this, book.id);
+        Ink.open = ink;
+        if (paged) {
+            if (pageView != null) showPage(pagedPage, 0);
+        } else if (adapter != null) {
+            adapter.notifyDataSetChanged();
+        }
+    }
 
     @Override protected void onResume() {
         super.onResume();
         if (book == null) return;
         Sync.openBookId = book.id;
+        Ink.open = ink;
         Sync.listen(synced);
+        freshInk();
         Sync.request(this);
         checkPending();
     }
@@ -1445,6 +1469,7 @@ public class PdfActivity extends Activity {
     private void stopSyncWatch() {
         if (book == null) return;
         if (book.id.equals(Sync.openBookId)) Sync.openBookId = null;
+        if (Ink.open == ink) Ink.open = null;
         Sync.unlisten(synced);
         Sync.request(this);
     }

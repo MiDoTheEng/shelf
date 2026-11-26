@@ -245,11 +245,51 @@ final class CloudLibrary {
         int left = 0;
         for (Book b : books) if (!b.onlineOnly() && b.asset.isEmpty() && !b.key.isEmpty()) left++;
 
+        // 1. Highlights and drawings first: they're small, and they're what you're waiting for
+        // on the other device. Send ours when they're newer, fetch theirs when theirs are.
+        for (Book b : books) {
+            if (b.key.isEmpty() || lib.find(b.id) == null) continue;
+            if (files == null) files = files(c, token, release);
+            Ink showing = Ink.open;
+            // Never swap the drawings of an open book while there are unsaved strokes on it.
+            if (showing != null && showing.isFor(b.id) && showing.dirty) continue;
+            if (b.inkPending && !b.inkAsset.isEmpty()) {
+                Long id = files.get(b.inkAsset);
+                if (id != null && id > 0) {
+                    download(c, token, id, Ink.fileFor(c, b.id), null);
+                    synchronized (lib) {
+                        b.inkPending = false;
+                    }
+                    lib.save();
+                } else if (id == null) {
+                    synchronized (lib) {
+                        b.inkPending = false;
+                    }
+                }
+            } else if (b.inkTime > 0 && b.inkAsset.isEmpty() && !b.onlineOnly()) {
+                File ink = Ink.fileFor(c, b.id);
+                byte[] data = ink.exists() ? com.shelf.reader.core.Util.readAll(new java.io.FileInputStream(ink))
+                        : "{}".getBytes(StandardCharsets.UTF_8);
+                String name = b.key + "-ink-" + b.inkTime + ".json";
+                upload(c, token, release, name, RequestBody.create(data, BYTES), files);
+                synchronized (lib) {
+                    b.inkAsset = name;
+                }
+                lib.save();
+                changed = true;
+            }
+        }
+        // Tell the other devices about new drawings now, before any long book upload.
+        if (changed) {
+            Sync.request(c);
+            changed = false;
+        }
+
         for (Book b : books) {
             if (b.key.isEmpty() || lib.find(b.id) == null) continue;
             if (files == null) files = files(c, token, release);
 
-            // 1. The book file itself, once.
+            // 2. The book file itself, once.
             if (!b.onlineOnly() && b.asset.isEmpty()) {
                 File f = new File(b.file);
                 if (!f.exists()) continue;
@@ -264,7 +304,7 @@ final class CloudLibrary {
                 changed = true;
             }
 
-            // 2. Its cover: send ours if it's newer, fetch theirs if it's newer.
+            // 3. Its cover: send ours if it's newer, fetch theirs if it's newer.
             if (b.coverPending && !b.coverAsset.isEmpty()) {
                 Long id = files.get(b.coverAsset);
                 if (id != null && id > 0) {
@@ -294,34 +334,6 @@ final class CloudLibrary {
                 synchronized (lib) {
                     b.coverTime = t;
                     b.coverAsset = name;
-                }
-                lib.save();
-                changed = true;
-            }
-
-            // 3. Highlights and drawings, the same way (never while the book is open).
-            if (b.id.equals(Sync.openBookId)) continue;
-            if (b.inkPending && !b.inkAsset.isEmpty()) {
-                Long id = files.get(b.inkAsset);
-                if (id != null && id > 0) {
-                    download(c, token, id, Ink.fileFor(c, b.id), null);
-                    synchronized (lib) {
-                        b.inkPending = false;
-                    }
-                    lib.save();
-                } else if (id == null) {
-                    synchronized (lib) {
-                        b.inkPending = false;
-                    }
-                }
-            } else if (b.inkTime > 0 && b.inkAsset.isEmpty() && !b.onlineOnly()) {
-                File ink = Ink.fileFor(c, b.id);
-                byte[] data = ink.exists() ? com.shelf.reader.core.Util.readAll(new java.io.FileInputStream(ink))
-                        : "{}".getBytes(StandardCharsets.UTF_8);
-                String name = b.key + "-ink-" + b.inkTime + ".json";
-                upload(c, token, release, name, RequestBody.create(data, BYTES), files);
-                synchronized (lib) {
-                    b.inkAsset = name;
                 }
                 lib.save();
                 changed = true;
