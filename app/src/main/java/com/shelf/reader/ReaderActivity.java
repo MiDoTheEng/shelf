@@ -400,7 +400,8 @@ public class ReaderActivity extends Activity {
             return;
         }
         turning = true;
-        final CurlView sheet = new CurlView(old, mode);
+        // The page you leave curls away: forward toward the spine, back the other way.
+        final CurlView sheet = new CurlView(old, delta > 0 ? mode : PageCurl.mirror(mode));
         root.addView(sheet, root.indexOfChild(web) + 1, new FrameLayout.LayoutParams(web.getWidth(), web.getHeight()));
         sheet.setX(web.getX());
         sheet.setY(web.getY());
@@ -411,23 +412,7 @@ public class ReaderActivity extends Activity {
                     finishTurn(sheet);
                     return;
                 }
-                if (delta > 0) {
-                    sheet.run(0f, 1f);
-                    return;
-                }
-                // Let the earlier page draw, then bring it in over the current one.
-                web.postDelayed(new Runnable() {
-                    @Override public void run() {
-                        android.graphics.Bitmap now = snapshot();
-                        if (now == null) {
-                            finishTurn(sheet);
-                            return;
-                        }
-                        sheet.under = old;
-                        sheet.page = now;
-                        sheet.run(1f, 0f);
-                    }
-                }, 90);
+                sheet.run(0f, 1f);
             }
         });
     }
@@ -449,7 +434,7 @@ public class ReaderActivity extends Activity {
         android.graphics.Bitmap old = snapshot();
         if (old == null) return false;
         turning = true;
-        CurlView sheet = new CurlView(old, Ui.mode(prefs));
+        CurlView sheet = new CurlView(old, delta > 0 ? Ui.mode(prefs) : PageCurl.mirror(Ui.mode(prefs)));
         root.addView(sheet, root.indexOfChild(web) + 1, new FrameLayout.LayoutParams(web.getWidth(), web.getHeight()));
         sheet.setX(web.getX());
         sheet.setY(web.getY());
@@ -464,10 +449,10 @@ public class ReaderActivity extends Activity {
     }
 
     /**
-     * A page held by the finger. Forward, a picture of the current page curls under the
-     * finger with the next page already behind it. Back, the earlier page comes in from the
-     * spine over a picture of the current one. Let go and it finishes the turn if pulled far
-     * or fast enough, otherwise it falls back and the book returns to where it was.
+     * A page held by the finger. A picture of the current page curls under the finger with
+     * the page you're going to already behind it: toward the spine going forward, the other
+     * way going back. Let go and it finishes the turn if pulled far or fast enough, otherwise
+     * it falls back and the book returns to where it was.
      */
     private final class Held {
         final int delta;
@@ -485,16 +470,17 @@ public class ReaderActivity extends Activity {
             this.delta = delta;
             this.sheet = sheet;
             this.old = old;
-            this.mode = Ui.mode(prefs);
+            this.mode = delta > 0 ? Ui.mode(prefs) : PageCurl.mirror(Ui.mode(prefs));
             this.downX = downX;
             this.downY = downY;
             rect.set(0, 0, web.getWidth(), web.getHeight());
             PageCurl.local(rect, mode, downX, downY, loc);
             startA = loc[0];
-            sheet.curl.topLeads = loc[1] < ("up".equals(mode) ? rect.width() : rect.height()) / 2f;
+            boolean vertical = "up".equals(mode) || "down".equals(mode);
+            sheet.curl.topLeads = loc[1] < (vertical ? rect.width() : rect.height()) / 2f;
             lastX = downX;
             lastY = downY;
-            sheet.t = delta > 0 ? 0f : 1f;
+            sheet.t = 0f;
         }
 
         void start() {
@@ -508,19 +494,8 @@ public class ReaderActivity extends Activity {
                                 if (letGo) held = null;
                                 return;
                             }
-                            if (delta > 0) {
-                                becomeReady();
-                                return;
-                            }
-                            web.postDelayed(new Runnable() {
-                                @Override public void run() {
-                                    android.graphics.Bitmap now = snapshot();
-                                    if (now == null) now = old;
-                                    sheet.under = old;
-                                    sheet.page = now;
-                                    becomeReady();
-                                }
-                            }, 90);
+                            // The new page is already behind the picture of the old one.
+                            becomeReady();
                         }
                     });
         }
@@ -548,18 +523,18 @@ public class ReaderActivity extends Activity {
         private void follow(float x, float y) {
             PageCurl.local(rect, mode, x, y, loc);
             float depth = PageCurl.depth(rect, mode);
-            float target = delta > 0 ? depth - (startA - loc[0]) : loc[0];
+            float target = depth - (startA - loc[0]);
             sheet.t = sheet.curl.follow(rect, mode, target, loc[1]);
             sheet.invalidate();
         }
 
         void release(MotionEvent e, boolean up) {
             float d = getResources().getDisplayMetrics().density;
-            float toward = delta > 0 ? -velA : velA;
+            float toward = -velA;
             if (e.getEventTime() - lastTime > 120) toward = 0;
             boolean commit;
             if (ready) {
-                float progress = delta > 0 ? sheet.t : 1f - sheet.t;
+                float progress = sheet.t;
                 commit = up && (toward > 0.3f * d || (toward > -0.05f * d && progress > 0.3f));
             } else {
                 commit = up && swipe(e.getX() - downX, e.getY() - downY, 52 * d, mode) == delta;
@@ -578,7 +553,7 @@ public class ReaderActivity extends Activity {
         }
 
         private void settle(final boolean commit) {
-            float goal = (delta > 0) == commit ? 1f : 0f;
+            float goal = commit ? 1f : 0f;
             sheet.animateTo(goal, Math.round(110 + 320 * Math.abs(goal - sheet.t)),
                     new android.view.animation.DecelerateInterpolator(), new Runnable() {
                         @Override public void run() {

@@ -166,6 +166,8 @@ final class PdfPageView extends View {
     private Ink.Page dragUnderInk;
     private final RectF dragCurlRect = new RectF(), dragUnderRect = new RectF();
     private float dragT, startA, lastA, velA;
+    /** Which way the held page curls: the reading direction forward, its mirror going back. */
+    private String dragMode = "left";
     private long lastTime;
     private android.animation.ValueAnimator settleAnim;
     private boolean skipTurnAnim;
@@ -207,8 +209,8 @@ final class PdfPageView extends View {
             previousInk = ink;
             turnDir = dir;
             fadeStart = android.os.SystemClock.uptimeMillis();
-            // Forward, the page you leave curls away; back, the earlier page curls in over it.
-            curling = dir > 0 ? withInk(bitmap, ink) : dir < 0 ? withInk(b, page) : null;
+            // The page you leave curls away: forward toward the spine, back the other way.
+            curling = dir != 0 ? withInk(bitmap, ink) : null;
         }
         ink = page;
         live = null;
@@ -600,27 +602,20 @@ final class PdfPageView extends View {
     private boolean startDrag(int delta) {
         Bitmap other = listener.peek(delta);
         if (other == null || bitmap == null || !place()) return false;
-        Ink.Page otherInk = listener.peekInk(delta);
         dragTurn = delta;
-        if (delta > 0) {
-            dragUnder = other;
-            dragUnderInk = otherInk;
-            fit(other, dragUnderRect);
-            dragCurl = withInk(bitmap, ink);
-            dragCurlRect.set(dst);
-            dragT = 0f;
-        } else {
-            dragUnder = bitmap;
-            dragUnderInk = ink;
-            dragUnderRect.set(dst);
-            dragCurl = withInk(other, otherInk);
-            fit(other, dragCurlRect);
-            dragT = 1f;
-        }
-        PageCurl.local(dragCurlRect, mode, downX, downY, loc);
+        dragMode = delta > 0 ? mode : PageCurl.mirror(mode);
+        // The page you're on curls away under the finger; the one you're going to is beneath.
+        dragUnder = other;
+        dragUnderInk = listener.peekInk(delta);
+        fit(other, dragUnderRect);
+        dragCurl = withInk(bitmap, ink);
+        dragCurlRect.set(dst);
+        dragT = 0f;
+        PageCurl.local(dragCurlRect, dragMode, downX, downY, loc);
         startA = loc[0];
         // Held near the top, the top corner leads the curl; lower down, the bottom one.
-        curl.topLeads = loc[1] < ("up".equals(mode) ? dragCurlRect.width() : dragCurlRect.height()) / 2f;
+        boolean vertical = "up".equals(dragMode) || "down".equals(dragMode);
+        curl.topLeads = loc[1] < (vertical ? dragCurlRect.width() : dragCurlRect.height()) / 2f;
         lastTime = 0;
         velA = 0;
         return true;
@@ -628,11 +623,11 @@ final class PdfPageView extends View {
 
     /** The page's edge follows the finger. */
     private void dragTo(MotionEvent e) {
-        PageCurl.local(dragCurlRect, mode, e.getX(), e.getY(), loc);
-        float depth = PageCurl.depth(dragCurlRect, mode);
-        // Forward the edge moves as far as the finger has; back it comes to the finger.
-        float target = dragTurn > 0 ? depth - (startA - loc[0]) : loc[0];
-        dragT = curl.follow(dragCurlRect, mode, target, loc[1]);
+        PageCurl.local(dragCurlRect, dragMode, e.getX(), e.getY(), loc);
+        float depth = PageCurl.depth(dragCurlRect, dragMode);
+        // The page's edge moves as far as the finger has.
+        float target = depth - (startA - loc[0]);
+        dragT = curl.follow(dragCurlRect, dragMode, target, loc[1]);
         long now = e.getEventTime();
         if (lastTime > 0 && now > lastTime) {
             float v = (loc[0] - lastA) / (now - lastTime);
@@ -645,11 +640,11 @@ final class PdfPageView extends View {
 
     /** Let go: the page finishes turning if it was pulled far or fast enough, else falls back. */
     private void release(MotionEvent e, boolean up) {
-        float progress = dragTurn > 0 ? dragT : 1f - dragT;
-        float toward = dragTurn > 0 ? -velA : velA;
+        float progress = dragT;
+        float toward = -velA;
         if (e.getEventTime() - lastTime > 120) toward = 0;
         final boolean commit = up && (toward > 0.3f * d || (toward > -0.05f * d && progress > 0.3f));
-        float goal = (dragTurn > 0) == commit ? 1f : 0f;
+        float goal = commit ? 1f : 0f;
         final int delta = dragTurn;
         settleAnim = android.animation.ValueAnimator.ofFloat(dragT, goal);
         settleAnim.setDuration(Math.round(110 + 320 * Math.abs(goal - dragT)));
@@ -731,7 +726,7 @@ final class PdfPageView extends View {
             paint.setAlpha(255);
             fadePaint.setAlpha(255);
             drawPage(canvas, dragUnder, dragUnderRect, dragUnderInk, paint);
-            curl.draw(canvas, dragCurl, dragCurlRect, fadePaint, dragT, mode, paper, day);
+            curl.draw(canvas, dragCurl, dragCurlRect, fadePaint, dragT, dragMode, paper, day);
             return;
         }
         curl.topLeads = false;
@@ -753,15 +748,11 @@ final class PdfPageView extends View {
             boolean day = paint.getColorFilter() == null;
             paint.setAlpha(255);
             fadePaint.setAlpha(255);
-            if (turnDir > 0) {
-                // The page you leave curls away; the next one is underneath.
-                drawPage(canvas, bitmap, dst, ink, paint);
-                curl.draw(canvas, curling, previousDst, fadePaint, e, mode, paper, day);
-            } else {
-                // Going back, the earlier page uncurls over the one you were on.
-                drawPage(canvas, previous, previousDst, previousInk, fadePaint);
-                curl.draw(canvas, curling, dst, paint, 1f - e, mode, paper, day);
-            }
+            // The page you leave curls away with the new one underneath. Going back it curls
+            // the other way, the mirror of going forward.
+            drawPage(canvas, bitmap, dst, ink, paint);
+            curl.draw(canvas, curling, previousDst, fadePaint, e,
+                    turnDir > 0 ? mode : PageCurl.mirror(mode), paper, day);
             postInvalidateOnAnimation();
         }
         if (sel == null) return;

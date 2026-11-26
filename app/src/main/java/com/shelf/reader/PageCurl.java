@@ -14,7 +14,8 @@ import android.graphics.Shader;
  * paper, shaded where it bends, and the roll casts a soft shadow on the page underneath.
  *
  * <p>The spine follows the reading direction: "left" (pages turn to the left, spine on the
- * left), "right" (Arabic: spine on the right) or "up" (spine at the top).
+ * left), "right" (Arabic: spine on the right), "up" (spine at the top) or "down" (spine at
+ * the bottom, used when going back in "up").
  */
 final class PageCurl {
     private static final int MW = 22, MH = 30;
@@ -46,8 +47,8 @@ final class PageCurl {
     void draw(Canvas canvas, Bitmap page, RectF r, Paint paint, float t, String direction, int paper,
               boolean shade) {
         setup(r, direction, t);
-        float a = mode == 2 ? r.height() : r.width();
-        float b = mode == 2 ? r.width() : r.height();
+        float a = mode >= 2 ? r.height() : r.width();
+        float b = mode >= 2 ? r.width() : r.height();
 
         // Which way "away from the spine" points on screen.
         float nb = topLeads ? -sin : sin;
@@ -58,9 +59,12 @@ final class PageCurl {
         } else if (mode == 1) {
             nx = -cos;
             ny = nb;
-        } else {
+        } else if (mode == 2) {
             nx = nb;
             ny = cos;
+        } else {
+            nx = nb;
+            ny = -cos;
         }
         float crest = roll + radius;
         toScreen(crest / cos, topLeads ? b : 0);
@@ -90,8 +94,11 @@ final class PageCurl {
                 } else if (mode == 1) {
                     la = right - x;
                     lb = y - top;
-                } else {
+                } else if (mode == 2) {
                     la = y - top;
+                    lb = x - left;
+                } else {
+                    la = bottom - y;
                     lb = x - left;
                 }
                 bend(la, lb);
@@ -136,13 +143,13 @@ final class PageCurl {
     }
 
     private void setup(RectF r, String direction, float t) {
-        mode = "up".equals(direction) ? 2 : "right".equals(direction) ? 1 : 0;
+        mode = "down".equals(direction) ? 3 : "up".equals(direction) ? 2 : "right".equals(direction) ? 1 : 0;
         left = r.left;
         top = r.top;
         right = r.right;
         bottom = r.bottom;
-        float a = mode == 2 ? r.height() : r.width();
-        float b = mode == 2 ? r.width() : r.height();
+        float a = mode >= 2 ? r.height() : r.width();
+        float b = mode >= 2 ? r.width() : r.height();
         span = b;
         radius = 0.13f * a;
         float tilt = 0.32f - 0.12f * t;
@@ -157,7 +164,10 @@ final class PageCurl {
      * in {@code r}: {@code o[0]} runs from the spine (0) to the free edge, {@code o[1]} along it.
      */
     static void local(RectF r, String direction, float x, float y, float[] o) {
-        if ("up".equals(direction)) {
+        if ("down".equals(direction)) {
+            o[0] = r.bottom - y;
+            o[1] = x - r.left;
+        } else if ("up".equals(direction)) {
             o[0] = y - r.top;
             o[1] = x - r.left;
         } else if ("right".equals(direction)) {
@@ -171,7 +181,18 @@ final class PageCurl {
 
     /** The page's length from the spine to the free edge. */
     static float depth(RectF r, String direction) {
-        return "up".equals(direction) ? r.height() : r.width();
+        return "up".equals(direction) || "down".equals(direction) ? r.height() : r.width();
+    }
+
+    /**
+     * The way a page curls when going back: the mirror of going forward, so the page you are
+     * on curls away toward the other side and the earlier page shows underneath.
+     */
+    static String mirror(String direction) {
+        if ("right".equals(direction)) return "left";
+        if ("up".equals(direction)) return "down";
+        if ("down".equals(direction)) return "up";
+        return "right";
     }
 
     /**
@@ -224,9 +245,12 @@ final class PageCurl {
         } else if (mode == 1) {
             out[0] = right - a;
             out[1] = top + b;
-        } else {
+        } else if (mode == 2) {
             out[0] = left + b;
             out[1] = top + a;
+        } else {
+            out[0] = left + b;
+            out[1] = bottom - a;
         }
         out[2] = light;
     }
