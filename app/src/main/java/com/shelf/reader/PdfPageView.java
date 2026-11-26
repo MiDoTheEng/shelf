@@ -150,12 +150,26 @@ final class PdfPageView extends View {
     private float lastAspect = 1.414f;
     private int paper = 0xFFFFFFFF;
     private static final long FADE_MS = 150;
+    private static final long TURN_MS = 340;
+
+    // Turning like paper: the leaving page swings around the book's spine.
+    private Ink.Page previousInk;
+    private int turnDir, waitingDir;
+    private final android.graphics.Camera camera = new android.graphics.Camera();
+    private final android.graphics.Matrix turnMatrix = new android.graphics.Matrix();
+    private final Paint shadePaint = new Paint();
 
     /** Shows another page. If it isn't drawn yet, the current page stays up until {@link #arrived}. */
     void turnTo(Bitmap b, Ink.Page page) {
+        turnTo(b, page, 0);
+    }
+
+    /** {@code dir} is +1 for the next page, -1 for the one before, 0 to just swap. */
+    void turnTo(Bitmap b, Ink.Page page, int dir) {
         if (b == null && bitmap != null) {
             waiting = true;
             waitingInk = page;
+            waitingDir = dir;
             return;
         }
         waiting = false;
@@ -163,6 +177,8 @@ final class PdfPageView extends View {
         if (bitmap != null && b != null && bitmap != b && place()) {
             previous = bitmap;
             previousDst.set(dst);
+            previousInk = ink;
+            turnDir = dir;
             fadeStart = android.os.SystemClock.uptimeMillis();
         }
         ink = page;
@@ -176,7 +192,7 @@ final class PdfPageView extends View {
 
     /** The page that was being waited for is ready. */
     void arrived(Bitmap b) {
-        if (waiting) turnTo(b, waitingInk);
+        if (waiting) turnTo(b, waitingInk, waitingDir);
     }
 
     void setBitmap(Bitmap b, boolean resetView) {
@@ -512,6 +528,67 @@ final class PdfPageView extends View {
         return true;
     }
 
+    private void drawPage(Canvas canvas, Bitmap b, RectF where, Ink.Page page, Paint p) {
+        p.setAlpha(255);
+        canvas.drawBitmap(b, null, where, p);
+        drawInk(canvas, page, where);
+    }
+
+    /** A page turned {@code amount} of the way over (0 flat, 1 edge-on), with its ink. */
+    private void drawTurning(Canvas canvas, Bitmap b, RectF where, Ink.Page page, float amount) {
+        float angle = 90f * amount;
+        float px, py;
+        camera.save();
+        camera.setLocation(0, 0, -Math.max(getWidth(), getHeight()) * 2.5f / 72f);
+        if ("up".equals(mode)) {
+            px = where.centerX();
+            py = Math.max(0, where.top);
+            camera.rotateX(-angle);
+        } else if ("right".equals(mode)) {
+            px = Math.min(getWidth(), where.right);
+            py = where.centerY();
+            camera.rotateY(-angle);
+        } else {
+            px = Math.max(0, where.left);
+            py = where.centerY();
+            camera.rotateY(angle);
+        }
+        camera.getMatrix(turnMatrix);
+        camera.restore();
+        turnMatrix.preTranslate(-px, -py);
+        turnMatrix.postTranslate(px, py);
+        canvas.save();
+        canvas.concat(turnMatrix);
+        Paint p = turnDir > 0 ? fadePaint : paint;
+        p.setAlpha(255);
+        canvas.drawBitmap(b, null, where, p);
+        drawInk(canvas, page, where);
+        // It darkens as it turns away from the light.
+        shadePaint.setColor(Math.round(110 * amount) << 24);
+        canvas.drawRect(where, shadePaint);
+        canvas.restore();
+    }
+
+    private void drawInk(Canvas canvas, Ink.Page page, RectF where) {
+        if (page == null || page.isEmpty()) return;
+        // Ink is stored in page widths, so one scale puts it on the page at any zoom.
+        canvas.save();
+        canvas.translate(where.left, where.top);
+        canvas.scale(where.width(), where.width());
+        for (Ink.Mark m : page.marks) {
+            markPaint.setColor((m.color & 0x00FFFFFF) | 0x66000000);
+            for (int k = 0; k + 3 < m.rects.length; k += 4) {
+                canvas.drawRect(m.rects[k], m.rects[k + 1], m.rects[k + 2], m.rects[k + 3], markPaint);
+            }
+        }
+        for (Ink.Stroke st : page.strokes) {
+            inkPaint.setColor(st.marker ? (st.color & 0x00FFFFFF) | 0x66000000 : st.color);
+            inkPaint.setStrokeWidth(st.width);
+            canvas.drawPath(st.path(), inkPaint);
+        }
+        canvas.restore();
+    }
+
     @Override protected void onDraw(Canvas canvas) {
         if (!place()) {
             // Not drawn yet (only when a book first opens): a blank sheet instead of black.
@@ -522,34 +599,30 @@ final class PdfPageView extends View {
             canvas.drawRect((w - pw) / 2f, (h - ph) / 2f, (w + pw) / 2f, (h + ph) / 2f, markPaint);
             return;
         }
-        canvas.drawBitmap(bitmap, null, dst, paint);
-        if (previous != null) {
-            float t = (android.os.SystemClock.uptimeMillis() - fadeStart) / (float) FADE_MS;
-            if (t >= 1f) {
-                previous = null;
+        long now = android.os.SystemClock.uptimeMillis();
+        float t = previous == null ? 1f
+                : (now - fadeStart) / (float) (turnDir == 0 ? FADE_MS : TURN_MS);
+        if (t >= 1f) {
+            previous = null;
+            previousInk = null;
+            drawPage(canvas, bitmap, dst, ink, paint);
+        } else if (turnDir == 0) {
+            drawPage(canvas, bitmap, dst, ink, paint);
+            fadePaint.setAlpha(Math.round(255 * (1f - t)));
+            canvas.drawBitmap(previous, null, previousDst, fadePaint);
+            postInvalidateOnAnimation();
+        } else {
+            float e = t * t * (3f - 2f * t);
+            if (turnDir > 0) {
+                // The page you leave lifts away around the spine; the next one is underneath.
+                drawPage(canvas, bitmap, dst, ink, paint);
+                drawTurning(canvas, previous, previousDst, previousInk, e);
             } else {
-                fadePaint.setAlpha(Math.round(255 * (1f - t)));
-                canvas.drawBitmap(previous, null, previousDst, fadePaint);
-                postInvalidateOnAnimation();
+                // Going back, the earlier page swings back in over the one you were on.
+                drawPage(canvas, previous, previousDst, previousInk, fadePaint);
+                drawTurning(canvas, bitmap, dst, ink, 1f - e);
             }
-        }
-        if (ink != null && !ink.isEmpty()) {
-            // Ink is stored in page widths, so one scale puts it on the page at any zoom.
-            canvas.save();
-            canvas.translate(dst.left, dst.top);
-            canvas.scale(dst.width(), dst.width());
-            for (Ink.Mark m : ink.marks) {
-                markPaint.setColor((m.color & 0x00FFFFFF) | 0x66000000);
-                for (int k = 0; k + 3 < m.rects.length; k += 4) {
-                    canvas.drawRect(m.rects[k], m.rects[k + 1], m.rects[k + 2], m.rects[k + 3], markPaint);
-                }
-            }
-            for (Ink.Stroke st : ink.strokes) {
-                inkPaint.setColor(st.marker ? (st.color & 0x00FFFFFF) | 0x66000000 : st.color);
-                inkPaint.setStrokeWidth(st.width);
-                canvas.drawPath(st.path(), inkPaint);
-            }
-            canvas.restore();
+            postInvalidateOnAnimation();
         }
         if (sel == null) return;
         for (RectF r : sel.rects) {

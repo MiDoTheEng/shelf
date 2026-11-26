@@ -335,7 +335,7 @@ public class ReaderActivity extends Activity {
                     } else if (Math.abs(dx) > min && Math.abs(dx) > 1.5f * Math.abs(dy)) {
                         delta = (dx < 0) == mode.equals("left") ? 1 : -1;
                     }
-                    if (delta != 0) web.evaluateJavascript("window.__shelf&&window.__shelf.go(" + delta + ")", null);
+                    if (delta != 0) turnPage(delta, mode);
                 }
                 return false;
             }
@@ -374,6 +374,113 @@ public class ReaderActivity extends Activity {
         fraction = offset;
         pendingOffset = offset;
         loadChapter();
+    }
+
+    // ------------------------------------------------------------ page turn
+
+    private boolean turning;
+
+    /**
+     * Turns like paper: a picture of the page is laid over the book, the book jumps to the
+     * next page underneath, and the picture swings away around the spine. Going back, the
+     * earlier page swings in over the one you were on.
+     */
+    private void turnPage(final int delta, final String mode) {
+        final String go = "window.__shelf?window.__shelf.go(" + delta + ",true):false";
+        final android.graphics.Bitmap old = snapshot();
+        if (turning || old == null) {
+            web.evaluateJavascript(go, null);
+            return;
+        }
+        turning = true;
+        final android.widget.ImageView under = sheet(old);
+        web.evaluateJavascript(go, new android.webkit.ValueCallback<String>() {
+            @Override public void onReceiveValue(String turned) {
+                if (!"true".equals(turned)) {
+                    // End of the chapter: the next one loads on its own.
+                    finishTurn(under, null);
+                    return;
+                }
+                if (delta > 0) {
+                    swing(under, mode, 0f, 1f, under, null);
+                    return;
+                }
+                // Let the earlier page draw, then bring it in over the current one.
+                web.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        android.graphics.Bitmap now = snapshot();
+                        if (now == null) {
+                            finishTurn(under, null);
+                            return;
+                        }
+                        android.widget.ImageView over = sheet(now);
+                        swing(over, mode, 1f, 0f, under, over);
+                    }
+                }, 90);
+            }
+        });
+    }
+
+    private android.graphics.Bitmap snapshot() {
+        int w = web.getWidth(), h = web.getHeight();
+        if (w == 0 || h == 0) return null;
+        try {
+            android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+            web.draw(new android.graphics.Canvas(b));
+            return b;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** A picture of the page, placed right above the book and below the bars. */
+    private android.widget.ImageView sheet(android.graphics.Bitmap b) {
+        android.widget.ImageView v = new android.widget.ImageView(this);
+        v.setImageBitmap(b);
+        v.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
+        root.addView(v, root.indexOfChild(web) + 1, new FrameLayout.LayoutParams(web.getWidth(), web.getHeight()));
+        v.setX(web.getX());
+        v.setY(web.getY());
+        return v;
+    }
+
+    private void swing(final android.widget.ImageView v, final String mode, final float from, final float to,
+                       final View a, final View b) {
+        v.setCameraDistance(Math.max(web.getWidth(), web.getHeight()) * 2.5f);
+        final boolean up = mode.equals("up");
+        if (up) {
+            v.setPivotX(web.getWidth() / 2f);
+            v.setPivotY(0);
+        } else {
+            v.setPivotX(mode.equals("right") ? web.getWidth() : 0);
+            v.setPivotY(web.getHeight() / 2f);
+        }
+        final float sign = mode.equals("right") ? 1f : -1f;
+        android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(from, to);
+        anim.setDuration(340);
+        anim.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        anim.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
+                float t = (Float) va.getAnimatedValue();
+                if (up) v.setRotationX(90f * t);
+                else v.setRotationY(sign * 90f * t);
+                // It darkens as it turns away from the light.
+                int shade = Math.round(255 * (1f - 0.45f * t));
+                v.setColorFilter(Color.rgb(shade, shade, shade), android.graphics.PorterDuff.Mode.MULTIPLY);
+            }
+        });
+        anim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                finishTurn(a, b);
+            }
+        });
+        anim.start();
+    }
+
+    private void finishTurn(View a, View b) {
+        if (a != null) root.removeView(a);
+        if (b != null) root.removeView(b);
+        turning = false;
     }
 
     private void loadChapter() {

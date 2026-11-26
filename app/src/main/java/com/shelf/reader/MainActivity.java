@@ -43,6 +43,10 @@ public class MainActivity extends Activity {
     private final ArrayList<Row> rows = new ArrayList<>();
     private RowAdapter adapter;
     private TextView subtitle;
+    private FrameLayout shelvesRoot;
+    private ListView shelves;
+    /** The book flying between shelves: its place stays empty until it lands. */
+    private Book flying;
     private int cols;
 
     @Override protected void onCreate(Bundle state) {
@@ -55,7 +59,9 @@ public class MainActivity extends Activity {
         root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0xFF15151C, 0xFF09090C}));
 
+        shelvesRoot = root;
         ListView list = new ListView(this);
+        shelves = list;
         list.setDivider(null);
         list.setDividerHeight(0);
         list.setSelector(new ColorDrawable(0));
@@ -319,6 +325,7 @@ public class MainActivity extends Activity {
                 final Book b = i < row.books.length ? row.books[i] : null;
                 BookView v = shelf.slots[i];
                 v.setBook(b);
+                v.setAlpha(b != null && b == flying ? 0f : 1f);
                 if (b == null) {
                     v.setOnClickListener(null);
                     v.setOnLongClickListener(null);
@@ -339,7 +346,7 @@ public class MainActivity extends Activity {
                     });
                     v.setOnLongClickListener(new View.OnLongClickListener() {
                         @Override public boolean onLongClick(View view) {
-                            menu(b);
+                            menu(b, bv);
                             return true;
                         }
                     });
@@ -372,7 +379,7 @@ public class MainActivity extends Activity {
         startActivity(i);
     }
 
-    private void menu(final Book b) {
+    private void menu(final Book b, final BookView from) {
         final String move = b.reading ? "Move back to Library" : "Move to Currently reading";
         String[] items = {b.onlineOnly() ? "Download and open" : "Open", "Rename", "Change cover", move, "Delete"};
         new AlertDialog.Builder(this)
@@ -390,17 +397,144 @@ public class MainActivity extends Activity {
                                 }
                             });
                         } else if (which == 3) {
-                            b.reading = !b.reading;
-                            b.shelfTime = System.currentTimeMillis();
-                            if (b.reading) b.opened = System.currentTimeMillis();
-                            lib.save();
-                            rebuild();
+                            moveBook(b, from);
                         } else {
                             confirmDelete(b);
                         }
                     }
                 })
                 .show();
+    }
+
+    // ------------------------------------------------------------ moving between shelves
+
+    /**
+     * Moves a book between Currently reading and Library. The book lifts off its shelf, flies
+     * in an arc to its new place and lands with a bounce. Back in the Library it also leaves
+     * Progress (on every device); reading it again brings it back there.
+     */
+    private void moveBook(final Book b, BookView from) {
+        b.reading = !b.reading;
+        b.shelfTime = System.currentTimeMillis();
+        if (b.reading) b.opened = System.currentTimeMillis();
+        lib.save();
+        if (!b.reading) History.remove(this, History.keyOf(b));
+
+        android.graphics.Bitmap pic = null;
+        int[] start = new int[2];
+        if (from != null && from.book() == b && from.getWidth() > 0 && from.isShown()) {
+            try {
+                pic = android.graphics.Bitmap.createBitmap(from.getWidth(), from.getHeight(),
+                        android.graphics.Bitmap.Config.ARGB_8888);
+                from.stand();
+                from.draw(new android.graphics.Canvas(pic));
+                start = inRoot(from);
+            } catch (Throwable t) {
+                pic = null;
+            }
+        }
+        if (pic == null) {
+            rebuild();
+            return;
+        }
+        final android.widget.ImageView bird = new android.widget.ImageView(this);
+        bird.setImageBitmap(pic);
+        bird.setElevation(Ui.dp(this, 12));
+        shelvesRoot.addView(bird, new FrameLayout.LayoutParams(from.getWidth(), from.getHeight()));
+        bird.setX(start[0]);
+        bird.setY(start[1]);
+        flying = b;
+        rebuild();
+        final float sx = start[0], sy = start[1];
+        shelves.post(new Runnable() {
+            int tries;
+
+            @Override public void run() {
+                BookView target = findSlot(b);
+                if (target == null && tries++ == 0) {
+                    // Its new place is off screen: bring that shelf into view first.
+                    int row = rowOf(b);
+                    if (row >= 0) shelves.setSelectionFromTop(row + shelves.getHeaderViewsCount(),
+                            shelves.getHeight() / 3);
+                    shelves.post(this);
+                    return;
+                }
+                if (target == null) {
+                    land(bird, null);
+                    return;
+                }
+                fly(bird, sx, sy, target);
+            }
+        });
+    }
+
+    private int[] inRoot(View v) {
+        int[] a = new int[2], r = new int[2];
+        v.getLocationInWindow(a);
+        shelvesRoot.getLocationInWindow(r);
+        return new int[]{a[0] - r[0], a[1] - r[1]};
+    }
+
+    private BookView findSlot(Book b) {
+        for (int i = 0; i < shelves.getChildCount(); i++) {
+            View child = shelves.getChildAt(i);
+            if (!(child instanceof ShelfRow)) continue;
+            for (BookView v : ((ShelfRow) child).slots) if (v.book() == b) return v;
+        }
+        return null;
+    }
+
+    private int rowOf(Book b) {
+        for (int i = 0; i < rows.size(); i++) {
+            Book[] books = rows.get(i).books;
+            if (books == null) continue;
+            for (Book x : books) if (x == b) return i;
+        }
+        return -1;
+    }
+
+    private void fly(final View bird, final float sx, final float sy, final BookView target) {
+        int[] end = inRoot(target);
+        final float ex = end[0], ey = end[1];
+        final float rise = Ui.dp(this, 70);
+        final float dir = ex >= sx ? 1f : -1f;
+        android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        anim.setDuration(560);
+        anim.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        anim.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
+                float t = (Float) va.getAnimatedValue();
+                float arc = (float) Math.sin(Math.PI * t);
+                bird.setX(sx + (ex - sx) * t);
+                bird.setY(sy + (ey - sy) * t - rise * arc);
+                bird.setRotation(dir * 10f * arc);
+                float scale = 1f + 0.14f * arc;
+                bird.setScaleX(scale);
+                bird.setScaleY(scale);
+            }
+        });
+        anim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                land(bird, target);
+            }
+        });
+        anim.start();
+    }
+
+    private void land(View bird, BookView target) {
+        shelvesRoot.removeView(bird);
+        Book b = flying;
+        flying = null;
+        if (target != null && target.book() == b) {
+            target.setAlpha(1f);
+            // A little drop onto the shelf, then the usual bounce.
+            target.setPivotX(target.getWidth() / 2f);
+            target.setPivotY(target.getHeight());
+            target.setTranslationY(-8 * getResources().getDisplayMetrics().density);
+            target.settle();
+        } else {
+            adapter.notifyDataSetChanged();
+        }
     }
 
     private EditText field(LinearLayout box, String caption, String value) {

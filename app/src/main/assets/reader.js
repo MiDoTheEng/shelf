@@ -80,11 +80,14 @@
     rep();
   }
 
-  S.go = function (n) {
-    if (!S.paged) return;
+  // quiet: the app animates the turn itself, so jump straight there. Returns true when the
+  // page changed inside this chapter.
+  S.go = function (n, quiet) {
+    if (!S.paged) return false;
     var p = S.page + n;
-    if (p < 0 || p >= S.pages) { Shelf.edge(n); return; }
-    setPage(p, S.mode !== 'up' && ((S.mode === 'right') === S.rtl));
+    if (p < 0 || p >= S.pages) { Shelf.edge(n); return false; }
+    setPage(p, !quiet && S.mode !== 'up' && ((S.mode === 'right') === S.rtl));
+    return true;
   };
 
   S.grab = function (share) {

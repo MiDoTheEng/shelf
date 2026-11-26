@@ -586,9 +586,9 @@ public class PdfActivity extends Activity {
         while (it.hasNext()) if (Math.abs(it.next() - pagedPage) > 2) it.remove();
         Bitmap ready = near.get(pagedPage);
         if (ink.dirty) ink.save();
-        // The current page stays on screen until the new one is drawn, then fades into it:
-        // no black flash in between.
-        pageView.turnTo(ready, ink.page(pagedPage));
+        // The current page stays on screen until the new one is drawn, then turns over to it
+        // like paper: no black flash in between.
+        pageView.turnTo(ready, ink.page(pagedPage), direction);
         // Each page keeps its own undo history while you're on it.
         redoStack.clear();
         undoStack.clear();
