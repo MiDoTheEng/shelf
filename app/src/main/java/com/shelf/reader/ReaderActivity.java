@@ -317,8 +317,20 @@ public class ReaderActivity extends Activity {
             private boolean multi;
 
             @Override public boolean onTouch(View v, MotionEvent e) {
-                flings.onTouchEvent(e);
                 int action = e.getActionMasked();
+                if (held != null) {
+                    // A page is in the hand: it follows the finger until let go.
+                    if (action == MotionEvent.ACTION_MOVE) held.dragTo(e);
+                    else if (action == MotionEvent.ACTION_UP) held.release(e, true);
+                    else if (action == MotionEvent.ACTION_CANCEL) held.release(e, false);
+                    return true;
+                }
+                if (action == MotionEvent.ACTION_MOVE && !multi && !selecting && paged() && !turning) {
+                    int delta = swipe(e.getX() - downX, e.getY() - downY, Ui.dp(ReaderActivity.this, 14),
+                            Ui.mode(prefs));
+                    if (delta != 0 && hold(delta, e, downX, downY)) return true;
+                }
+                flings.onTouchEvent(e);
                 if (action == MotionEvent.ACTION_DOWN) {
                     downX = e.getX();
                     downY = e.getY();
@@ -329,12 +341,7 @@ public class ReaderActivity extends Activity {
                     float dx = e.getX() - downX, dy = e.getY() - downY;
                     float min = Ui.dp(ReaderActivity.this, 52);
                     String mode = Ui.mode(prefs);
-                    int delta = 0;
-                    if (mode.equals("up")) {
-                        if (Math.abs(dy) > min && Math.abs(dy) > 1.5f * Math.abs(dx)) delta = dy < 0 ? 1 : -1;
-                    } else if (Math.abs(dx) > min && Math.abs(dx) > 1.5f * Math.abs(dy)) {
-                        delta = (dx < 0) == mode.equals("left") ? 1 : -1;
-                    }
+                    int delta = swipe(dx, dy, min, mode);
                     if (delta != 0) turnPage(delta, mode);
                 }
                 return false;
@@ -425,6 +432,172 @@ public class ReaderActivity extends Activity {
         });
     }
 
+    /** +1 for a swipe toward the next page, -1 toward the one before, 0 if not a swipe yet. */
+    private static int swipe(float dx, float dy, float min, String mode) {
+        if (mode.equals("up")) {
+            if (Math.abs(dy) > min && Math.abs(dy) > 1.5f * Math.abs(dx)) return dy < 0 ? 1 : -1;
+        } else if (Math.abs(dx) > min && Math.abs(dx) > 1.5f * Math.abs(dy)) {
+            return (dx < 0) == mode.equals("left") ? 1 : -1;
+        }
+        return 0;
+    }
+
+    private Held held;
+
+    /** Picks up the page under the finger. */
+    private boolean hold(int delta, MotionEvent e, float downX, float downY) {
+        android.graphics.Bitmap old = snapshot();
+        if (old == null) return false;
+        turning = true;
+        CurlView sheet = new CurlView(old, Ui.mode(prefs));
+        root.addView(sheet, root.indexOfChild(web) + 1, new FrameLayout.LayoutParams(web.getWidth(), web.getHeight()));
+        sheet.setX(web.getX());
+        sheet.setY(web.getY());
+        // The page now belongs to the finger, not the book: no text selection starts.
+        MotionEvent cancel = MotionEvent.obtain(e);
+        cancel.setAction(MotionEvent.ACTION_CANCEL);
+        web.onTouchEvent(cancel);
+        cancel.recycle();
+        held = new Held(delta, sheet, old, downX, downY);
+        held.start();
+        return true;
+    }
+
+    /**
+     * A page held by the finger. Forward, a picture of the current page curls under the
+     * finger with the next page already behind it. Back, the earlier page comes in from the
+     * spine over a picture of the current one. Let go and it finishes the turn if pulled far
+     * or fast enough, otherwise it falls back and the book returns to where it was.
+     */
+    private final class Held {
+        final int delta;
+        final CurlView sheet;
+        final android.graphics.Bitmap old;
+        final String mode;
+        final float startA;
+        final float[] loc = new float[2];
+        final android.graphics.RectF rect = new android.graphics.RectF();
+        boolean ready, dead, letGo, letGoCommit;
+        float lastX, lastY, lastA, velA, downX, downY;
+        long lastTime;
+
+        Held(int delta, CurlView sheet, android.graphics.Bitmap old, float downX, float downY) {
+            this.delta = delta;
+            this.sheet = sheet;
+            this.old = old;
+            this.mode = Ui.mode(prefs);
+            this.downX = downX;
+            this.downY = downY;
+            rect.set(0, 0, web.getWidth(), web.getHeight());
+            PageCurl.local(rect, mode, downX, downY, loc);
+            startA = loc[0];
+            sheet.curl.topLeads = loc[1] < ("up".equals(mode) ? rect.width() : rect.height()) / 2f;
+            lastX = downX;
+            lastY = downY;
+            sheet.t = delta > 0 ? 0f : 1f;
+        }
+
+        void start() {
+            web.evaluateJavascript("window.__shelf?window.__shelf.go(" + delta + ",true):false",
+                    new android.webkit.ValueCallback<String>() {
+                        @Override public void onReceiveValue(String turned) {
+                            if (!"true".equals(turned)) {
+                                // End of the chapter: the next one loads as before.
+                                dead = true;
+                                finishTurn(sheet);
+                                if (letGo) held = null;
+                                return;
+                            }
+                            if (delta > 0) {
+                                becomeReady();
+                                return;
+                            }
+                            web.postDelayed(new Runnable() {
+                                @Override public void run() {
+                                    android.graphics.Bitmap now = snapshot();
+                                    if (now == null) now = old;
+                                    sheet.under = old;
+                                    sheet.page = now;
+                                    becomeReady();
+                                }
+                            }, 90);
+                        }
+                    });
+        }
+
+        private void becomeReady() {
+            ready = true;
+            follow(lastX, lastY);
+            if (letGo) settle(letGoCommit);
+        }
+
+        void dragTo(MotionEvent e) {
+            lastX = e.getX();
+            lastY = e.getY();
+            PageCurl.local(rect, mode, lastX, lastY, loc);
+            long now = e.getEventTime();
+            if (lastTime > 0 && now > lastTime) {
+                float v = (loc[0] - lastA) / (now - lastTime);
+                velA = velA * 0.5f + v * 0.5f;
+            }
+            lastA = loc[0];
+            lastTime = now;
+            if (ready && !dead) follow(lastX, lastY);
+        }
+
+        private void follow(float x, float y) {
+            PageCurl.local(rect, mode, x, y, loc);
+            float depth = PageCurl.depth(rect, mode);
+            float target = delta > 0 ? depth - (startA - loc[0]) : loc[0];
+            sheet.t = sheet.curl.follow(rect, mode, target, loc[1]);
+            sheet.invalidate();
+        }
+
+        void release(MotionEvent e, boolean up) {
+            float d = getResources().getDisplayMetrics().density;
+            float toward = delta > 0 ? -velA : velA;
+            if (e.getEventTime() - lastTime > 120) toward = 0;
+            boolean commit;
+            if (ready) {
+                float progress = delta > 0 ? sheet.t : 1f - sheet.t;
+                commit = up && (toward > 0.3f * d || (toward > -0.05f * d && progress > 0.3f));
+            } else {
+                commit = up && swipe(e.getX() - downX, e.getY() - downY, 52 * d, mode) == delta;
+            }
+            if (dead) {
+                held = null;
+                return;
+            }
+            held = null;
+            if (!ready) {
+                letGo = true;
+                letGoCommit = commit;
+                return;
+            }
+            settle(commit);
+        }
+
+        private void settle(final boolean commit) {
+            float goal = (delta > 0) == commit ? 1f : 0f;
+            sheet.animateTo(goal, Math.round(110 + 320 * Math.abs(goal - sheet.t)),
+                    new android.view.animation.DecelerateInterpolator(), new Runnable() {
+                        @Override public void run() {
+                            if (commit) {
+                                finishTurn(sheet);
+                                return;
+                            }
+                            // Fell back: return the book to the page it was on, then lift the picture.
+                            web.evaluateJavascript("window.__shelf&&window.__shelf.go(" + (-delta) + ",true)", null);
+                            web.postDelayed(new Runnable() {
+                                @Override public void run() {
+                                    finishTurn(sheet);
+                                }
+                            }, 90);
+                        }
+                    });
+        }
+    }
+
     private android.graphics.Bitmap snapshot() {
         int w = web.getWidth(), h = web.getHeight();
         if (w == 0 || h == 0) return null;
@@ -447,8 +620,8 @@ public class ReaderActivity extends Activity {
         android.graphics.Bitmap page, under;
         private final String mode;
         private final int paper;
-        private float t;
-        private final PageCurl curl = new PageCurl();
+        float t;
+        final PageCurl curl = new PageCurl();
         private final android.graphics.Paint paint =
                 new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
         private final android.graphics.RectF rect = new android.graphics.RectF();
@@ -462,9 +635,18 @@ public class ReaderActivity extends Activity {
         }
 
         void run(float from, float to) {
-            android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(from, to);
-            anim.setDuration(480);
-            anim.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+            t = from;
+            animateTo(to, 480, new android.view.animation.AccelerateDecelerateInterpolator(), new Runnable() {
+                @Override public void run() {
+                    finishTurn(CurlView.this);
+                }
+            });
+        }
+
+        void animateTo(float to, long ms, android.animation.TimeInterpolator how, final Runnable end) {
+            android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(t, to);
+            anim.setDuration(ms);
+            anim.setInterpolator(how);
             anim.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
                 @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
                     t = (Float) va.getAnimatedValue();
@@ -473,7 +655,7 @@ public class ReaderActivity extends Activity {
             });
             anim.addListener(new android.animation.AnimatorListenerAdapter() {
                 @Override public void onAnimationEnd(android.animation.Animator animation) {
-                    finishTurn(CurlView.this);
+                    end.run();
                 }
             });
             anim.start();

@@ -10,8 +10,8 @@ android {
         applicationId 'com.shelf.reader'
         minSdk 26
         targetSdk 34
-        versionCode 36
-        versionName '4.5'
+        versionCode 37
+        versionName '4.6'
     }
 
     // A fixed key kept in the project, so every new build installs over the previous

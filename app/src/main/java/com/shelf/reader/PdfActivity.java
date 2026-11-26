@@ -258,6 +258,16 @@ public class PdfActivity extends Activity {
         pageView = new PdfPageView(this);
         pageView.setNight(night);
         pageView.listener = new PdfPageView.Listener() {
+            @Override public Bitmap peek(int delta) {
+                int target = pagedPage + delta;
+                if (target < 0 || target >= pageCount) return null;
+                return near.get(target);
+            }
+
+            @Override public Ink.Page peekInk(int delta) {
+                return ink.page(pagedPage + delta);
+            }
+
             @Override public void onTurn(int delta) {
                 int target = pagedPage + delta;
                 if (target < 0) {

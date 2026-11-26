@@ -20,6 +20,9 @@ import android.view.View;
 final class PdfPageView extends View {
     interface Listener {
         void onTurn(int delta);
+        /** The page {@code delta} away if it's drawn and ready, else null. */
+        Bitmap peek(int delta);
+        Ink.Page peekInk(int delta);
         void onTap();
         void onZoomSettled(float zoom);
         /** Asks for the text between a and b; word is true when a single word was held. */
@@ -156,6 +159,17 @@ final class PdfPageView extends View {
     private Ink.Page previousInk;
     private int turnDir, waitingDir;
     private final PageCurl curl = new PageCurl();
+
+    // Holding a page: it curls under the finger and turns only when let go.
+    private int dragTurn;
+    private Bitmap dragCurl, dragUnder;
+    private Ink.Page dragUnderInk;
+    private final RectF dragCurlRect = new RectF(), dragUnderRect = new RectF();
+    private float dragT, startA, lastA, velA;
+    private long lastTime;
+    private android.animation.ValueAnimator settleAnim;
+    private boolean skipTurnAnim;
+    private final float[] loc = new float[2];
     /** The page that curls over, with its ink drawn in. */
     private Bitmap curling;
 
@@ -166,6 +180,19 @@ final class PdfPageView extends View {
 
     /** {@code dir} is +1 for the next page, -1 for the one before, 0 to just swap. */
     void turnTo(Bitmap b, Ink.Page page, int dir) {
+        // After a page was turned by hand, it is already showing: no second animation.
+        if (skipTurnAnim) {
+            skipTurnAnim = false;
+            dir = 0;
+            previous = null;
+            waiting = false;
+            if (b != null) {
+                ink = page;
+                live = null;
+                setBitmap(b, true);
+                return;
+            }
+        }
         if (b == null && bitmap != null) {
             waiting = true;
             waitingInk = page;
@@ -498,8 +525,29 @@ final class PdfPageView extends View {
             return true;
         }
 
+        if (dragTurn != 0) {
+            if (settleAnim != null) return true;
+            if (action == MotionEvent.ACTION_MOVE) {
+                dragTo(e);
+            } else if (action == MotionEvent.ACTION_UP) {
+                release(e, true);
+            } else if (action == MotionEvent.ACTION_CANCEL) {
+                release(e, false);
+            }
+            return true;
+        }
+        if (settleAnim != null) return true;
+
         scaler.onTouchEvent(e);
         if (!scaler.isInProgress()) gestures.onTouchEvent(e);
+        if (action == MotionEvent.ACTION_MOVE && !multi && !selectGesture && drag == NONE && zoom <= 1.02f
+                && listener != null && previous == null && !scaler.isInProgress()) {
+            int delta = swipe(e.getX() - downX, e.getY() - downY, 14 * d);
+            if (delta != 0 && startDrag(delta)) {
+                dragTo(e);
+                return true;
+            }
+        }
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
             multi = true;
         } else if (action == MotionEvent.ACTION_MOVE) {
@@ -528,6 +576,106 @@ final class PdfPageView extends View {
             drag = NONE;
         }
         return true;
+    }
+
+    /** +1 for a swipe toward the next page, -1 toward the one before, 0 if not a swipe yet. */
+    private int swipe(float dx, float dy, float min) {
+        if (mode.equals("up")) {
+            if (Math.abs(dy) > min && Math.abs(dy) > 1.5f * Math.abs(dx)) return dy < 0 ? 1 : -1;
+        } else if (Math.abs(dx) > min && Math.abs(dx) > 1.5f * Math.abs(dy)) {
+            return (dx < 0) == mode.equals("left") ? 1 : -1;
+        }
+        return 0;
+    }
+
+    /** Where a page of this shape sits at normal size. */
+    private void fit(Bitmap b, RectF out) {
+        float w = getWidth(), h = getHeight();
+        float fit = Math.min(w / b.getWidth(), h / b.getHeight());
+        float dw = b.getWidth() * fit, dh = b.getHeight() * fit;
+        out.set((w - dw) / 2f, (h - dh) / 2f, (w + dw) / 2f, (h + dh) / 2f);
+    }
+
+    /** Picks the page up: forward the current page curls; back, the earlier page comes in. */
+    private boolean startDrag(int delta) {
+        Bitmap other = listener.peek(delta);
+        if (other == null || bitmap == null || !place()) return false;
+        Ink.Page otherInk = listener.peekInk(delta);
+        dragTurn = delta;
+        if (delta > 0) {
+            dragUnder = other;
+            dragUnderInk = otherInk;
+            fit(other, dragUnderRect);
+            dragCurl = withInk(bitmap, ink);
+            dragCurlRect.set(dst);
+            dragT = 0f;
+        } else {
+            dragUnder = bitmap;
+            dragUnderInk = ink;
+            dragUnderRect.set(dst);
+            dragCurl = withInk(other, otherInk);
+            fit(other, dragCurlRect);
+            dragT = 1f;
+        }
+        PageCurl.local(dragCurlRect, mode, downX, downY, loc);
+        startA = loc[0];
+        // Held near the top, the top corner leads the curl; lower down, the bottom one.
+        curl.topLeads = loc[1] < ("up".equals(mode) ? dragCurlRect.width() : dragCurlRect.height()) / 2f;
+        lastTime = 0;
+        velA = 0;
+        return true;
+    }
+
+    /** The page's edge follows the finger. */
+    private void dragTo(MotionEvent e) {
+        PageCurl.local(dragCurlRect, mode, e.getX(), e.getY(), loc);
+        float depth = PageCurl.depth(dragCurlRect, mode);
+        // Forward the edge moves as far as the finger has; back it comes to the finger.
+        float target = dragTurn > 0 ? depth - (startA - loc[0]) : loc[0];
+        dragT = curl.follow(dragCurlRect, mode, target, loc[1]);
+        long now = e.getEventTime();
+        if (lastTime > 0 && now > lastTime) {
+            float v = (loc[0] - lastA) / (now - lastTime);
+            velA = velA * 0.5f + v * 0.5f;
+        }
+        lastA = loc[0];
+        lastTime = now;
+        invalidate();
+    }
+
+    /** Let go: the page finishes turning if it was pulled far or fast enough, else falls back. */
+    private void release(MotionEvent e, boolean up) {
+        float progress = dragTurn > 0 ? dragT : 1f - dragT;
+        float toward = dragTurn > 0 ? -velA : velA;
+        if (e.getEventTime() - lastTime > 120) toward = 0;
+        final boolean commit = up && (toward > 0.3f * d || (toward > -0.05f * d && progress > 0.3f));
+        float goal = (dragTurn > 0) == commit ? 1f : 0f;
+        final int delta = dragTurn;
+        settleAnim = android.animation.ValueAnimator.ofFloat(dragT, goal);
+        settleAnim.setDuration(Math.round(110 + 320 * Math.abs(goal - dragT)));
+        settleAnim.setInterpolator(new android.view.animation.DecelerateInterpolator());
+        settleAnim.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
+                dragT = (Float) va.getAnimatedValue();
+                invalidate();
+            }
+        });
+        settleAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                settleAnim = null;
+                dragTurn = 0;
+                dragCurl = null;
+                dragUnder = null;
+                dragUnderInk = null;
+                if (commit && listener != null) {
+                    skipTurnAnim = true;
+                    listener.onTurn(delta);
+                    skipTurnAnim = false;
+                }
+                invalidate();
+            }
+        });
+        settleAnim.start();
     }
 
     private void drawPage(Canvas canvas, Bitmap b, RectF where, Ink.Page page, Paint p) {
@@ -578,6 +726,15 @@ final class PdfPageView extends View {
             canvas.drawRect((w - pw) / 2f, (h - ph) / 2f, (w + pw) / 2f, (h + ph) / 2f, markPaint);
             return;
         }
+        if (dragTurn != 0 && dragCurl != null) {
+            boolean day = paint.getColorFilter() == null;
+            paint.setAlpha(255);
+            fadePaint.setAlpha(255);
+            drawPage(canvas, dragUnder, dragUnderRect, dragUnderInk, paint);
+            curl.draw(canvas, dragCurl, dragCurlRect, fadePaint, dragT, mode, paper, day);
+            return;
+        }
+        curl.topLeads = false;
         long now = android.os.SystemClock.uptimeMillis();
         float t = previous == null ? 1f
                 : (now - fadeStart) / (float) (turnDir == 0 ? FADE_MS : TURN_MS);
