@@ -862,7 +862,6 @@ public class ReaderActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override public void run() {
                     if (destroyed || content == null) return;
-                    quoteBar.setVisibility(View.GONE);
                     String t = Quotes.clean(text);
                     if (t.isEmpty()) {
                         Ui.toast(ReaderActivity.this, "Select some text first");

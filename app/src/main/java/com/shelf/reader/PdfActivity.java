@@ -756,7 +756,8 @@ public class PdfActivity extends Activity {
         } else {
             Ui.toast(this, "This quote is already saved");
         }
-        clearSelection();
+        // The text stays selected, so it can be translated and then saved, or the other way
+        // round. A tap anywhere on the page lets it go.
     }
 
     // --------------------------------------------------- drawing and highlighting

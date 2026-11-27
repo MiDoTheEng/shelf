@@ -178,32 +178,6 @@ public class MainActivity extends Activity {
 
         adapter = new RowAdapter();
         list.setAdapter(adapter);
-        list.setOnScrollListener(new AbsListView.OnScrollListener() {
-            private int lastFirst = -1, lastTop;
-            private long lastTime;
-            private float speed;
-
-            @Override public void onScrollStateChanged(AbsListView view, int state) {
-                if (state == SCROLL_STATE_IDLE) {
-                    speed = 0;
-                    swayBooks(view, 0, true);
-                }
-            }
-
-            @Override public void onScroll(AbsListView view, int first, int visible, int total) {
-                View top = view.getChildAt(0);
-                long now = android.os.SystemClock.uptimeMillis();
-                if (top == null) return;
-                if (first == lastFirst && now > lastTime) {
-                    float v = (top.getTop() - lastTop) / (float) (now - lastTime);
-                    speed = speed * 0.6f + v * 0.4f;
-                    swayBooks(view, speed, false);
-                }
-                lastFirst = first;
-                lastTop = top.getTop();
-                lastTime = now;
-            }
-        });
         root.addView(list, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -246,6 +220,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        closeOpening();
         rebuild();
         Sync.listen(synced);
         Sync.request(this);
@@ -254,6 +229,11 @@ public class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         Sync.unlisten(synced);
+    }
+
+    @Override protected void onStop() {
+        super.onStop();
+        closeOpening();
     }
 
     private void handleIntent(Intent intent) {
@@ -312,34 +292,6 @@ public class MainActivity extends Activity {
             if (!title.contains(word) && !author.contains(word)) return false;
         }
         return true;
-    }
-
-    /**
-     * While the shelves scroll the books sway with the movement: they lag behind a little and
-     * tip, alternating left and right; when scrolling stops they settle back with a bounce.
-     */
-    private void swayBooks(AbsListView list, float speed, boolean settle) {
-        float d = getResources().getDisplayMetrics().density;
-        float lag = Math.max(-10 * d, Math.min(10 * d, speed * 6 * d));
-        float tilt = Math.min(4f, Math.abs(speed) * 1.6f);
-        for (int i = 0; i < list.getChildCount(); i++) {
-            View child = list.getChildAt(i);
-            if (!(child instanceof ShelfRow)) continue;
-            BookView[] slots = ((ShelfRow) child).slots;
-            for (int k = 0; k < slots.length; k++) {
-                BookView b = slots[k];
-                if (b.book() == null || b.lifted()) continue;
-                if (settle) {
-                    b.settle();
-                } else {
-                    b.animate().cancel();
-                    b.setPivotX(b.getWidth() / 2f);
-                    b.setPivotY(b.getHeight());
-                    b.setTranslationY(lag);
-                    b.setRotation((k % 2 == 0 ? 1 : -1) * tilt * Math.signum(speed));
-                }
-            }
-        }
     }
 
     private void addShelf(String name, List<Book> books, String emptyHint) {
@@ -401,12 +353,8 @@ public class MainActivity extends Activity {
                     final BookView bv = v;
                     v.setOnClickListener(new View.OnClickListener() {
                         @Override public void onClick(View view) {
-                            // The book slides out of the shelf, then opens.
-                            bv.pullOut(new Runnable() {
-                                @Override public void run() {
-                                    open(b);
-                                }
-                            });
+                            // The book comes off the shelf and opens like a real one.
+                            openLikeABook(b, bv);
                         }
                     });
                     v.setOnLongClickListener(new View.OnLongClickListener() {
@@ -425,13 +373,19 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ actions
 
     private void open(final Book b) {
+        Intent i = readerFor(b);
+        if (i != null) startActivity(i);
+    }
+
+    /** Gets a book ready to read and says which screen reads it, or null if it can't open yet. */
+    private Intent readerFor(Book b) {
         if (b.onlineOnly()) {
             fetch(b, true);
-            return;
+            return null;
         }
         if (!new File(b.file).exists()) {
             Ui.toast(this, "This book's file is missing");
-            return;
+            return null;
         }
         if (!b.reading) {
             b.reading = true;
@@ -441,7 +395,176 @@ public class MainActivity extends Activity {
         lib.save();
         Intent i = new Intent(this, b.format.equals("pdf") ? PdfActivity.class : ReaderActivity.class);
         i.putExtra("id", b.id);
-        startActivity(i);
+        return i;
+    }
+
+    // ------------------------------------------------------------ opening a book
+
+    /** The picture of the book lifted off the shelf while it opens, until the reader is up. */
+    private FrameLayout opening;
+
+    /**
+     * Opens a book like a real one. It comes off the shelf to the middle of the screen, its
+     * cover swings open on the spine and shows the first page, and that page grows to fill the
+     * screen as the book appears. The spine is on the right for right-to-left reading.
+     */
+    private void openLikeABook(final Book b, BookView from) {
+        if (opening != null) return;
+        if (b.onlineOnly() || !new File(b.file).exists() || from.getWidth() == 0 || !from.isShown()) {
+            open(b);
+            return;
+        }
+        final float d = getResources().getDisplayMetrics().density;
+        android.graphics.Bitmap cover;
+        int[] at = inRoot(from);
+        final float cw = from.getWidth() - 14 * d, ch = from.getHeight() - 8 * d;
+        try {
+            from.stand();
+            android.graphics.Bitmap whole = android.graphics.Bitmap.createBitmap(from.getWidth(), from.getHeight(),
+                    android.graphics.Bitmap.Config.ARGB_8888);
+            from.draw(new android.graphics.Canvas(whole));
+            cover = android.graphics.Bitmap.createBitmap(whole, Math.round(7 * d), Math.round(8 * d),
+                    Math.max(1, Math.round(cw)), Math.max(1, Math.round(ch)));
+        } catch (Throwable t) {
+            open(b);
+            return;
+        }
+        final float sx = at[0] + 7 * d, sy = at[1] + 8 * d;
+        final boolean rtl = "right".equals(Ui.mode(getSharedPreferences("shelf", MODE_PRIVATE)));
+
+        final FrameLayout stage = new FrameLayout(this);
+        stage.setElevation(30 * d);
+        stage.setClickable(true);
+        final View dim = new View(this);
+        dim.setBackgroundColor(0xFF0E0E12);
+        dim.setAlpha(0f);
+        stage.addView(dim, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // The first page, waiting under the cover: paper, darker by the spine.
+        final View page = new View(this);
+        GradientDrawable paper = new GradientDrawable(rtl ? GradientDrawable.Orientation.RIGHT_LEFT
+                : GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xFFCFC6B4, 0xFFEDE6D6, 0xFFF6F1E6, 0xFFF3EDE0});
+        paper.setCornerRadius(2 * d);
+        page.setBackground(paper);
+        stage.addView(page, new FrameLayout.LayoutParams(Math.round(cw), Math.round(ch)));
+
+        final android.widget.ImageView front = new android.widget.ImageView(this);
+        front.setImageBitmap(cover);
+        front.setScaleType(android.widget.ImageView.ScaleType.FIT_XY);
+        front.setCameraDistance(9000 * d);
+        stage.addView(front, new FrameLayout.LayoutParams(Math.round(cw), Math.round(ch)));
+
+        shelvesRoot.addView(stage, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        opening = stage;
+        from.setAlpha(0f);
+        final BookView shelfSlot = from;
+
+        final float W = shelvesRoot.getWidth(), H = shelvesRoot.getHeight();
+        // Where the closed book rests in the middle of the screen.
+        final float mid = Math.min(0.74f * H / ch, 0.72f * W / cw);
+        final float mx = (W - cw * mid) / 2f + (rtl ? -1 : 1) * 0.12f * cw * mid;
+        final float my = (H - ch * mid) / 2f;
+        for (View v : new View[]{page, front}) {
+            v.setPivotX(rtl ? cw : 0);
+            v.setPivotY(0);
+            v.setX(sx);
+            v.setY(sy);
+        }
+
+        // 1. Off the shelf to the middle of the screen.
+        final android.animation.ValueAnimator lift = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        lift.setDuration(340);
+        lift.setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f));
+        lift.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
+                float t = (Float) va.getAnimatedValue();
+                float scale = 1f + (mid - 1f) * t;
+                float x = sx + (mx - sx) * t, y = sy + (my - sy) * t;
+                for (View v : new View[]{page, front}) {
+                    // The pivot is on the spine side, so place the left edge by hand.
+                    v.setX(rtl ? x + cw * scale - cw : x);
+                    v.setY(y);
+                    v.setScaleX(scale);
+                    v.setScaleY(scale);
+                }
+                front.setRotationY((rtl ? 1 : -1) * 8f * (float) Math.sin(Math.PI * t));
+                dim.setAlpha(0.9f * t);
+            }
+        });
+
+        // 2. The cover swings open on the spine, showing its inside as it lies back.
+        final android.animation.ValueAnimator swing = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        swing.setDuration(520);
+        swing.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        swing.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            boolean inside;
+
+            @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
+                float t = (Float) va.getAnimatedValue();
+                float angle = 165f * t;
+                front.setRotationY((rtl ? 1 : -1) * angle);
+                if (!inside && angle > 90f) {
+                    // Past upright, the inside of the cover faces you.
+                    inside = true;
+                    front.setImageDrawable(null);
+                    front.setBackgroundColor(0xFF3A2E26);
+                }
+                // Light falls across the cover as it turns.
+                int shade = Math.round(255 * (1f - 0.35f * (float) Math.sin(Math.PI * t)));
+                front.setColorFilter(android.graphics.Color.rgb(shade, shade, shade), android.graphics.PorterDuff.Mode.MULTIPLY);
+            }
+        });
+
+        // 3. The first page fills the screen, and the book is there.
+        final android.animation.ValueAnimator grow = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        grow.setDuration(300);
+        grow.setInterpolator(new android.view.animation.AccelerateInterpolator(1.3f));
+        grow.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override public void onAnimationUpdate(android.animation.ValueAnimator va) {
+                float t = (Float) va.getAnimatedValue();
+                float scaleX = mid + (W / cw - mid) * t, scaleY = mid + (H / ch - mid) * t;
+                float x = mx + (0 - mx) * t, y = my + (0 - my) * t;
+                page.setX(rtl ? x + cw * scaleX - cw : x);
+                page.setY(y);
+                page.setScaleX(scaleX);
+                page.setScaleY(scaleY);
+                front.setAlpha(1f - t);
+            }
+        });
+
+        lift.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                swing.start();
+            }
+        });
+        swing.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                grow.start();
+            }
+        });
+        grow.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                Intent i = readerFor(b);
+                if (i == null) {
+                    closeOpening();
+                    return;
+                }
+                startActivity(i);
+                overridePendingTransition(android.R.anim.fade_in, 0);
+                shelfSlot.setAlpha(1f);
+            }
+        });
+        lift.start();
+    }
+
+    /** Takes the opened-book picture away once the reader covers it, or when back on the shelves. */
+    private void closeOpening() {
+        if (opening == null) return;
+        shelvesRoot.removeView(opening);
+        opening = null;
+        if (adapter != null) adapter.notifyDataSetChanged();
     }
 
     private void menu(final Book b, final BookView from) {

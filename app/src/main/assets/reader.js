@@ -94,8 +94,9 @@
     var g = window.getSelection();
     var x = String(g || '');
     if (!x.trim()) x = S.last;
+    // The selection stays, so the same text can be translated and then quoted. A tap on
+    // the page lets it go.
     Shelf.grab(x, share);
-    if (g) g.removeAllRanges();
   };
 
   // ---- text highlights, stored as character positions counted from the start of the section
