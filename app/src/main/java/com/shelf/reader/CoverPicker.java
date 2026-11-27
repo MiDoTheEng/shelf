@@ -29,7 +29,10 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Choosing a book's cover: a photo, a page of a PDF, a picture inside an EPUB/Kindle book, or the original. */
+/**
+ * Choosing a book's cover: one found online (Google Books and Open Library), a photo, a page
+ * of a PDF, a picture inside an EPUB/Kindle book, or the original.
+ */
 final class CoverPicker {
     static final int PICK_PHOTO = 43;
 
@@ -38,6 +41,12 @@ final class CoverPicker {
     static void show(final Activity a, final Book b, final Runnable done) {
         final ArrayList<String> items = new ArrayList<>();
         final ArrayList<Runnable> actions = new ArrayList<>();
+        items.add("Find online");
+        actions.add(new Runnable() {
+            @Override public void run() {
+                askOnline(a, b, done);
+            }
+        });
         items.add("Choose from photos");
         actions.add(new Runnable() {
             @Override public void run() {
@@ -270,8 +279,36 @@ final class CoverPicker {
         return BitmapFactory.decodeByteArray(data, 0, data.length, o);
     }
 
+    /** Fetches the full-size picture behind a thumbnail in the grid, off the main thread. */
+    private interface Full {
+        Bitmap load(int position);
+    }
+
     private static void showGrid(final Activity a, final Book b, final List<String> paths,
                                  final List<Bitmap> thumbs, final Runnable done) {
+        showGrid(a, b, thumbs, "Tap a picture", new Full() {
+            @Override public Bitmap load(int position) {
+                Bitmap full = null;
+                BookContent c = null;
+                try {
+                    File f = new File(b.file);
+                    c = b.format.equals("epub") ? new EpubBook(f) : new MobiBook(f);
+                    byte[] data = read(c, paths.get(position));
+                    if (data != null) full = decode(data, 600);
+                } catch (Exception | OutOfMemoryError ignored) {
+                } finally {
+                    try {
+                        if (c != null) c.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+                return full;
+            }
+        }, done);
+    }
+
+    private static void showGrid(final Activity a, final Book b, final List<Bitmap> thumbs, String title,
+                                 final Full full, final Runnable done) {
         GridView grid = new GridView(a);
         grid.setNumColumns(3);
         grid.setVerticalSpacing(Ui.dp(a, 8));
@@ -292,7 +329,7 @@ final class CoverPicker {
             }
         });
         final AlertDialog dialog = new AlertDialog.Builder(a)
-                .setTitle("Tap a picture")
+                .setTitle(title)
                 .setView(grid)
                 .setNegativeButton("Cancel", null)
                 .create();
@@ -302,26 +339,183 @@ final class CoverPicker {
                 Ui.toast(a, "Setting the cover…");
                 new Thread(new Runnable() {
                     @Override public void run() {
-                        Bitmap full = null;
-                        BookContent c = null;
-                        try {
-                            File f = new File(b.file);
-                            c = b.format.equals("epub") ? new EpubBook(f) : new MobiBook(f);
-                            byte[] data = read(c, paths.get(position));
-                            if (data != null) full = decode(data, 600);
-                        } catch (Exception | OutOfMemoryError ignored) {
-                        } finally {
-                            try {
-                                if (c != null) c.close();
-                            } catch (Exception ignored) {
-                            }
-                        }
-                        finish(a, b, full, done);
+                        finish(a, b, full.load(position), done);
                     }
                 }).start();
             }
         });
         dialog.show();
+    }
+
+    // ------------------------------------------------------------------ online
+
+    private static okhttp3.OkHttpClient http;
+
+    private static synchronized okhttp3.OkHttpClient http() {
+        if (http == null) {
+            http = new okhttp3.OkHttpClient.Builder()
+                    .connectTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                    .build();
+        }
+        return http;
+    }
+
+    /** Asks what to search for, starting from the book's name and author. */
+    private static void askOnline(final Activity a, final Book b, final Runnable done) {
+        final EditText field = new EditText(a);
+        field.setSingleLine(true);
+        field.setInputType(InputType.TYPE_CLASS_TEXT);
+        String start = b.title == null ? "" : b.title;
+        if (b.author != null && !b.author.isEmpty()) start += " " + b.author;
+        field.setText(start.trim());
+        field.setSelectAllOnFocus(true);
+        FrameLayout box = new FrameLayout(a);
+        box.setPadding(Ui.dp(a, 20), Ui.dp(a, 8), Ui.dp(a, 20), 0);
+        box.addView(field);
+        new AlertDialog.Builder(a)
+                .setTitle("Find a cover online")
+                .setMessage("Book name, and the author if you know it")
+                .setView(box)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Search", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        String q = field.getText().toString().trim();
+                        if (q.isEmpty()) return;
+                        searchOnline(a, b, q, done);
+                    }
+                })
+                .show();
+    }
+
+    /** One cover found online: a small picture for the grid and the large one to keep. */
+    private static final class Found {
+        final String small, large;
+
+        Found(String small, String large) {
+            this.small = small;
+            this.large = large;
+        }
+    }
+
+    private static void searchOnline(final Activity a, final Book b, final String q, final Runnable done) {
+        Ui.toast(a, "Searching for covers…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<Found> found = new ArrayList<>();
+                try {
+                    googleBooks(q, found);
+                } catch (Exception ignored) {
+                }
+                try {
+                    openLibrary(q, found);
+                } catch (Exception ignored) {
+                }
+                // Fetch the small pictures a few at a time.
+                final Bitmap[] small = new Bitmap[found.size()];
+                java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+                for (int i = 0; i < found.size(); i++) {
+                    final int k = i;
+                    pool.execute(new Runnable() {
+                        @Override public void run() {
+                            small[k] = fetch(found.get(k).small, 300);
+                        }
+                    });
+                }
+                pool.shutdown();
+                try {
+                    pool.awaitTermination(40, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                }
+                final List<Bitmap> thumbs = new ArrayList<>();
+                final List<Found> shown = new ArrayList<>();
+                for (int i = 0; i < found.size(); i++) {
+                    // Skip blanks: missing covers come back as tiny placeholder images.
+                    if (small[i] != null && small[i].getWidth() > 20 && small[i].getHeight() > 30) {
+                        thumbs.add(small[i]);
+                        shown.add(found.get(i));
+                    }
+                }
+                a.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (a.isDestroyed()) return;
+                        if (thumbs.isEmpty()) {
+                            Ui.toast(a, Sync.connected(a) ? "No covers found. Try the book's exact name"
+                                    : "You're offline");
+                            return;
+                        }
+                        showGrid(a, b, thumbs, "Tap a cover", new Full() {
+                            @Override public Bitmap load(int position) {
+                                Bitmap big = fetch(shown.get(position).large, 900);
+                                return big != null && big.getWidth() > 20 ? big : thumbs.get(position);
+                            }
+                        }, done);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private static String get(String url) throws java.io.IOException {
+        okhttp3.Request req = new okhttp3.Request.Builder().url(url)
+                .header("User-Agent", "Shelf reader (Android)").build();
+        try (okhttp3.Response r = http().newCall(req).execute()) {
+            if (!r.isSuccessful() || r.body() == null) throw new java.io.IOException("HTTP " + r.code());
+            return r.body().string();
+        }
+    }
+
+    private static Bitmap fetch(String url, int maxWidth) {
+        try {
+            okhttp3.Request req = new okhttp3.Request.Builder().url(url)
+                    .header("User-Agent", "Shelf reader (Android)").build();
+            try (okhttp3.Response r = http().newCall(req).execute()) {
+                if (!r.isSuccessful() || r.body() == null) return null;
+                byte[] data = r.body().bytes();
+                return decode(data, maxWidth);
+            }
+        } catch (Exception | OutOfMemoryError e) {
+            return null;
+        }
+    }
+
+    private static String enc(String q) {
+        try {
+            return java.net.URLEncoder.encode(q, "UTF-8");
+        } catch (Exception e) {
+            return q;
+        }
+    }
+
+    private static void googleBooks(String q, List<Found> out) throws Exception {
+        org.json.JSONObject o = new org.json.JSONObject(
+                get("https://www.googleapis.com/books/v1/volumes?maxResults=20&printType=books&q=" + enc(q)));
+        org.json.JSONArray items = o.optJSONArray("items");
+        if (items == null) return;
+        for (int i = 0; i < items.length(); i++) {
+            org.json.JSONObject info = items.getJSONObject(i).optJSONObject("volumeInfo");
+            org.json.JSONObject links = info == null ? null : info.optJSONObject("imageLinks");
+            if (links == null) continue;
+            String t = links.optString("thumbnail", links.optString("smallThumbnail", ""));
+            if (t.isEmpty()) continue;
+            t = t.replace("http://", "https://").replace("&edge=curl", "");
+            // The same picture, asked for in a larger size.
+            String big = t.replaceAll("&zoom=\\d", "") + "&fife=w800";
+            out.add(new Found(t, big));
+        }
+    }
+
+    private static void openLibrary(String q, List<Found> out) throws Exception {
+        org.json.JSONObject o = new org.json.JSONObject(
+                get("https://openlibrary.org/search.json?limit=20&fields=cover_i&q=" + enc(q)));
+        org.json.JSONArray docs = o.optJSONArray("docs");
+        if (docs == null) return;
+        for (int i = 0; i < docs.length(); i++) {
+            long id = docs.getJSONObject(i).optLong("cover_i", 0);
+            if (id <= 0) continue;
+            String base = "https://covers.openlibrary.org/b/id/" + id;
+            out.add(new Found(base + "-M.jpg", base + "-L.jpg"));
+        }
     }
 
     // ------------------------------------------------------------------ saving
